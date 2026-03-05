@@ -7,7 +7,7 @@
 This repo includes **agent skills** for self-installing tools. Install via npm:
 
 ```bash
-npm install -g @lirrensi/agent-cli-helpers
+npx skills add https://github.com/lirrensi/agent-cli-helpers
 ```
 
 Available skills:
@@ -134,16 +134,23 @@ skills/
 
 The pattern is simple:
 1. Agent checks if tool exists: `crony --help`
-2. If not, install it: `npm install -g @lirrensi/agent-cli-helpers` (or `uv tool install agentcli-helpers`)
+2. If not, install it: `npx skills add https://github.com/lirrensi/agent-cli-helpers`
 3. Use it
 
 No MCP servers. No configuration. No OAuth. Just tools.
 
 ## Why This Exists
 
-Because AI agents deserve desktop superpowers too. Because the command line is already there — we just need it to be *nicer*.
+You can do all of this in raw bash. Seriously — background jobs, notifications, cron, screenshots — it's all possible with the right incantations.
 
-No daemon to manage. No database to run. Just files, folders, and commands that work.
+But it's *ugly*. It's *error-prone*. And writing 3 lines of PowerShell just to show a notification is a waste of energy.
+
+This repo exists because AI agents deserve desktop superpowers without the friction. The command line is already there — we just need it to be *nicer*.
+
+- **One-liner APIs** instead of 10 lines of boilerplate
+- **Consistent behavior** across Windows, macOS, and Linux
+- **Error handling** that doesn't make you cry at 3am
+- **No daemon to manage** — just files, folders, and commands that work
 
 ## Requirements
 
