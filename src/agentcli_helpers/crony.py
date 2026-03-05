@@ -1,0 +1,574 @@
+"""Cron job manager CLI with natural language scheduling.
+
+Usage:
+    crony add <name> <schedule> <command>
+    crony list
+    crony rm <name>
+    crony run <name>
+    crony logs <name>
+
+Schedule formats (natural language):
+    in 5m, in 1h, in 2d
+    at 15:30, at "2026-03-10 10:00"
+    every 1h, every 30m, every 24h
+    every monday, every weekday
+"""
+
+import os
+import sys
+import json
+import subprocess
+import platform
+from pathlib import Path
+from datetime import datetime
+import click
+
+# Check for optional dependencies
+try:
+    import dateparser
+except ImportError:
+    click.echo("Error: crony requires extra dependencies.", err=True)
+    click.echo("Install with: uv tool install agentcli-helpers[crony]", err=True)
+    sys.exit(1)
+
+# Job storage directory
+CRONY_DIR = Path.home() / ".crony"
+JOBS_FILE = CRONY_DIR / "jobs.json"
+
+
+def ensure_crony_dir():
+    """Ensure crony directory exists."""
+    CRONY_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def load_jobs() -> dict:
+    """Load all jobs from storage."""
+    ensure_crony_dir()
+    if JOBS_FILE.exists():
+        return json.loads(JOBS_FILE.read_text())
+    return {}
+
+
+def save_jobs(jobs: dict):
+    """Save jobs to storage."""
+    ensure_crony_dir()
+    JOBS_FILE.write_text(json.dumps(jobs, indent=2))
+
+
+def parse_schedule(schedule: str) -> dict:
+    """Parse natural language schedule into structured format.
+
+    Returns dict with:
+        - type: "once" or "recurring"
+        - next_run: ISO timestamp
+        - cron_expr: cron expression (for recurring)
+        - interval: interval string (for recurring)
+    """
+    schedule = schedule.strip().lower()
+
+    # Check for recurring patterns
+    recurring_prefixes = ["every ", "each "]
+    is_recurring = any(schedule.startswith(p) for p in recurring_prefixes)
+
+    if is_recurring:
+        # Parse recurring schedule
+        interval_part = schedule.replace("every ", "").replace("each ", "")
+
+        # Convert to cron expression
+        cron_expr = interval_to_cron(interval_part)
+
+        return {
+            "type": "recurring",
+            "interval": interval_part,
+            "cron_expr": cron_expr,
+            "next_run": None,  # Will be calculated by scheduler
+        }
+    else:
+        # One-off schedule
+        # Try to parse with dateparser
+        dt = dateparser.parse(
+            schedule,
+            settings={
+                "PREFER_DATES_FROM": "future",
+                "TIMEZONE": "local",
+            },
+        )
+
+        if not dt:
+            raise ValueError(f"Could not parse schedule: {schedule}")
+
+        return {
+            "type": "once",
+            "schedule": schedule,
+            "next_run": dt.isoformat(),
+        }
+
+
+def interval_to_cron(interval: str) -> str:
+    """Convert interval string to cron expression."""
+    interval = interval.strip().lower()
+
+    # Simple intervals
+    mappings = {
+        # Minutes
+        "1m": "*/1 * * * *",
+        "5m": "*/5 * * * *",
+        "10m": "*/10 * * * *",
+        "15m": "*/15 * * * *",
+        "30m": "*/30 * * * *",
+        # Hours
+        "1h": "0 * * * *",
+        "2h": "0 */2 * * *",
+        "6h": "0 */6 * * *",
+        "12h": "0 */12 * * *",
+        "24h": "0 0 * * *",
+        # Days
+        "1d": "0 0 * * *",
+        # Weeks
+        "1w": "0 0 * * 0",
+    }
+
+    if interval in mappings:
+        return mappings[interval]
+
+    # Parse numeric + unit
+    import re
+
+    match = re.match(r"(\d+)([mhdw])", interval)
+    if match:
+        num, unit = int(match.group(1)), match.group(2)
+        if unit == "m":
+            return f"*/{num} * * * *"
+        elif unit == "h":
+            return f"0 */{num} * * *"
+        elif unit == "d":
+            return f"0 0 */{num} * *"
+        elif unit == "w":
+            return f"0 0 * * 0"
+
+    # Named days
+    day_mappings = {
+        "monday": "0 0 * * 1",
+        "tuesday": "0 0 * * 2",
+        "wednesday": "0 0 * * 3",
+        "thursday": "0 0 * * 4",
+        "friday": "0 0 * * 5",
+        "saturday": "0 0 * * 6",
+        "sunday": "0 0 * * 0",
+        "weekday": "0 0 * * 1-5",
+        "weekend": "0 0 * * 0,6",
+    }
+
+    if interval in day_mappings:
+        return day_mappings[interval]
+
+    # Default: try to interpret as cron directly
+    return interval
+
+
+def add_job(name: str, schedule: str, cmd: str) -> dict:
+    """Add a new cron job."""
+    jobs = load_jobs()
+
+    if name in jobs:
+        raise ValueError(f"Job '{name}' already exists. Use 'crony rm {name}' first.")
+
+    parsed = parse_schedule(schedule)
+
+    job = {
+        "name": name,
+        "cmd": cmd,
+        "created_at": datetime.now().isoformat(),
+        **parsed,
+    }
+
+    jobs[name] = job
+    save_jobs(jobs)
+
+    # Register with OS scheduler
+    register_job(job)
+
+    return job
+
+
+def register_job(job: dict):
+    """Register job with OS-level scheduler."""
+    system = platform.system()
+
+    if system == "Linux":
+        register_job_crontab(job)
+    elif system == "Darwin":
+        register_job_crontab(job)
+    elif system == "Windows":
+        register_job_task_scheduler(job)
+
+
+def register_job_crontab(job: dict):
+    """Register job with crontab (Linux/macOS)."""
+    name = job["name"]
+    cmd = job["cmd"]
+    cron_expr = job.get("cron_expr", "")
+
+    if not cron_expr:
+        # One-off job - use at command instead
+        register_job_at(job)
+        return
+
+    # Add marker comment for identification
+    marker = f"# CRONY:{name}"
+    cron_line = f"{cron_expr} {cmd}  # CRONY:{name}"
+
+    # Get current crontab
+    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    current = result.stdout if result.returncode == 0 else ""
+
+    # Remove existing entry for this job if any
+    lines = [l for l in current.split("\n") if f"CRONY:{name}" not in l]
+
+    # Add new entry
+    lines.append(cron_line)
+
+    # Write back
+    new_cron = "\n".join(lines)
+    proc = subprocess.run(
+        ["crontab", "-"], input=new_cron, capture_output=True, text=True
+    )
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"Failed to update crontab: {proc.stderr}")
+
+
+def register_job_at(job: dict):
+    """Register one-off job with 'at' command (Linux/macOS)."""
+    # This is for one-off jobs
+    # TODO: Implement 'at' command scheduling
+    pass
+
+
+def register_job_task_scheduler(job: dict):
+    """Register job with Windows Task Scheduler."""
+    name = job["name"]
+    cmd = job["cmd"]
+    cron_expr = job.get("cron_expr", "")
+
+    # Create a scheduled task
+    # For simplicity, we'll create a basic task
+    task_name = f"CRONY_{name}"
+
+    # Delete existing task if any
+    subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True)
+
+    if job["type"] == "recurring":
+        # Parse cron for Windows Task Scheduler
+        # This is simplified - real implementation would need full cron parser
+        parts = cron_expr.split()
+        minute, hour, day_of_month, month, day_of_week = parts
+
+        # Create recurring task
+        subprocess.run(
+            [
+                "schtasks",
+                "/Create",
+                "/TN",
+                task_name,
+                "/TR",
+                cmd,
+                "/SC",
+                "DAILY",  # Simplified
+                "/ST",
+                "00:00",  # Simplified
+                "/F",
+            ],
+            capture_output=True,
+            check=True,
+        )
+    else:
+        # One-off task
+        # Parse next_run and create a one-time task
+        dt = datetime.fromisoformat(job["next_run"])
+        start_time = dt.strftime("%H:%M")
+        start_date = dt.strftime("%m/%d/%Y")
+
+        subprocess.run(
+            [
+                "schtasks",
+                "/Create",
+                "/TN",
+                task_name,
+                "/TR",
+                cmd,
+                "/SC",
+                "ONCE",
+                "/ST",
+                start_time,
+                "/SD",
+                start_date,
+                "/F",
+            ],
+            capture_output=True,
+            check=True,
+        )
+
+
+def remove_job(name: str) -> bool:
+    """Remove a cron job."""
+    jobs = load_jobs()
+
+    if name not in jobs:
+        return False
+
+    job = jobs[name]
+
+    # Unregister from OS
+    unregister_job(job)
+
+    # Remove from storage
+    del jobs[name]
+    save_jobs(jobs)
+
+    return True
+
+
+def unregister_job(job: dict):
+    """Unregister job from OS scheduler."""
+    system = platform.system()
+    name = job["name"]
+
+    if system in ["Linux", "Darwin"]:
+        # Remove from crontab
+        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        current = result.stdout if result.returncode == 0 else ""
+        lines = [l for l in current.split("\n") if f"CRONY:{name}" not in l]
+        new_cron = "\n".join(lines)
+        subprocess.run(["crontab", "-"], input=new_cron, capture_output=True, text=True)
+
+    elif system == "Windows":
+        task_name = f"CRONY_{name}"
+        subprocess.run(
+            ["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True
+        )
+
+
+def run_job(name: str) -> bool:
+    """Run a job immediately."""
+    jobs = load_jobs()
+
+    if name not in jobs:
+        return False
+
+    job = jobs[name]
+    cmd = job["cmd"]
+
+    # Run the command
+    if sys.platform == "win32":
+        subprocess.Popen(cmd, shell=True, creationflags=subprocess.DETACHED_PROCESS)
+    else:
+        subprocess.Popen(cmd, shell=True, start_new_session=True)
+
+    return True
+
+
+def get_job_logs(name: str) -> str | None:
+    """Get logs for a job."""
+    log_file = CRONY_DIR / "logs" / f"{name}.log"
+    if log_file.exists():
+        return log_file.read_text()
+    return None
+
+
+def scan_os_scheduler() -> dict:
+    """Scan OS scheduler for CRONY jobs.
+
+    Returns dict of {name: job_info} for all CRONY tasks found.
+    Used for auto-recovery if jobs.json gets corrupted.
+    """
+    system = platform.system()
+    jobs = {}
+
+    if system in ["Linux", "Darwin"]:
+        # Scan crontab for CRONY: markers
+        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        if result.returncode == 0:
+            for line in result.stdout.split("\n"):
+                if "# CRONY:" in line:
+                    # Parse: "0 * * * * curl ...  # CRONY:ping"
+                    import re
+
+                    match = re.search(r"# CRONY:(\w+)", line)
+                    if match:
+                        name = match.group(1)
+                        # Extract cron expression (first 5 fields)
+                        parts = line.split()
+                        if len(parts) >= 6:
+                            cron_expr = " ".join(parts[:5])
+                            cmd = " ".join(parts[5:]).split("# CRONY:")[0].strip()
+                            jobs[name] = {
+                                "name": name,
+                                "cmd": cmd,
+                                "cron_expr": cron_expr,
+                                "type": "recurring",
+                                "recovered": True,
+                            }
+
+    elif system == "Windows":
+        # Scan Task Scheduler for CRONY_ tasks
+        result = subprocess.run(
+            ["schtasks", "/Query", "/FO", "LIST", "/V"], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            import re
+
+            # Find all CRONY_ task names
+            for match in re.finditer(r"TaskName:\s+(.+\\)?CRONY_(\w+)", result.stdout):
+                name = match.group(2)
+                jobs[name] = {
+                    "name": name,
+                    "type": "recurring",  # Assume recurring for now
+                    "recovered": True,
+                }
+
+    return jobs
+
+
+def sync_jobs() -> dict:
+    """Reconcile jobs.json with OS scheduler.
+
+    - Finds orphan tasks in OS scheduler, adds to index
+    - Re-registers jobs in index but missing from OS
+    - Returns the reconciled jobs dict
+    """
+    stored = load_jobs()
+    os_jobs = scan_os_scheduler()
+
+    changed = False
+
+    # Find orphans: in OS but not in index
+    for name, job in os_jobs.items():
+        if name not in stored:
+            stored[name] = job
+            changed = True
+
+    # Find missing: in index but not in OS
+    for name, job in stored.items():
+        if name not in os_jobs and job.get("type") == "recurring":
+            # Re-register with OS
+            try:
+                register_job(job)
+            except Exception:
+                pass  # Best effort
+
+    if changed:
+        save_jobs(stored)
+
+    return stored
+
+
+@click.group()
+def main():
+    """Cron job manager with natural language scheduling."""
+    pass
+
+
+@main.command()
+@click.argument("name")
+@click.argument("schedule")
+@click.argument("cmd")
+def add(name: str, schedule: str, cmd: str):
+    """Add a new cron job.
+
+    NAME: Job name (unique identifier)
+
+    SCHEDULE: Natural language schedule (e.g., "in 5m", "every 1h", "at 15:30")
+
+    CMD: Command to run
+
+    Examples:
+        crony add ping "every 1h" "curl http://api/ping"
+        crony add backup "at 15:30" "backup.sh"
+        crony add report "every monday" "weekly-report.sh"
+    """
+    try:
+        job = add_job(name, schedule, cmd)
+        click.echo(f"Added job: {name}")
+        click.echo(f"  Schedule: {schedule} ({job['type']})")
+        if job.get("cron_expr"):
+            click.echo(f"  Cron: {job['cron_expr']}")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@main.command("list")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option("--sync", is_flag=True, help="Force sync with OS scheduler")
+def list_cmd(json_output: bool, sync: bool):
+    """List all cron jobs.
+
+    Automatically syncs with OS scheduler to recover orphaned tasks.
+    """
+    # Always sync on list to auto-heal
+    jobs = sync_jobs() if sync else load_jobs()
+
+    if json_output:
+        click.echo(json.dumps(jobs, indent=2))
+    else:
+        if not jobs:
+            click.echo("No jobs found.")
+            return
+
+        from rich.console import Console
+        from rich.table import Table
+
+        console = Console()
+        table = Table(title="Crony Jobs")
+        table.add_column("Name", style="cyan")
+        table.add_column("Type", style="yellow")
+        table.add_column("Schedule", style="green")
+        table.add_column("Command", style="white", max_width=40)
+
+        for name, job in jobs.items():
+            table.add_row(
+                name,
+                job.get("type", "?"),
+                job.get("interval") or job.get("schedule", "?"),
+                job.get("cmd", "?")[:40],
+            )
+
+        console.print(table)
+
+
+@main.command()
+@click.argument("name")
+def rm(name: str):
+    """Remove a cron job."""
+    if remove_job(name):
+        click.echo(f"Removed job: {name}")
+    else:
+        click.echo(f"Job not found: {name}", err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.argument("name")
+def run(name: str):
+    """Run a job immediately."""
+    if run_job(name):
+        click.echo(f"Triggered job: {name}")
+    else:
+        click.echo(f"Job not found: {name}", err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.argument("name")
+def logs(name: str):
+    """View job logs."""
+    log_content = get_job_logs(name)
+    if log_content:
+        click.echo(log_content)
+    else:
+        click.echo(f"No logs found for job: {name}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentcli-helpers"
+version = "0.2.0"
+description = "Desktop assistant CLI tools for AI agents - crony, notify, bg, screenshot"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+crony = [
+    "dateparser>=1.2.0",
+    "schedule>=1.2.0",
+]
+screenshot = [
+    "mss>=9.0.0",
+    "pillow>=10.0.0",
+]
+all = [
+    "agentcli-helpers[crony,screenshot]",
+]
+
+[project.scripts]
+crony = "agentcli_helpers.crony:main"
+notify = "agentcli_helpers.notify:main"
+bg = "agentcli_helpers.bg:main"
+screenshot = "agentcli_helpers.screenshot:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentcli_helpers"]

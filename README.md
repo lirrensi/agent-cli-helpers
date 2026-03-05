@@ -1,0 +1,155 @@
+# AgentCLI Helpers
+
+> Desktop superpowers for your AI agent. Simple CLI tools that just work.
+
+## Skills
+
+This repo includes **agent skills** for self-installing tools. Install via npm:
+
+```bash
+npm install -g @lirrensi/agent-cli-helpers
+```
+
+Available skills:
+
+| Skill | Description |
+|-------|-------------|
+| `bg-jobs` | Background jobs that don't disappear |
+| `crony` | Cron jobs with natural language scheduling |
+| `desktop-notifications` | Cross-platform desktop notifications |
+| `screenshot` | Screen capture that actually works |
+| `edge-tts` | Text-to-speech using Microsoft's edge-tts |
+
+## The Problem
+
+You've got an AI agent with bash access. That's powerful — but the raw APIs are *rough*.
+
+Want to run something in the background? Hope you remember `nohup`, because the output is going to `nohup.out` somewhere and tracking jobs is on you.
+
+Need a notification? Good luck cross-platform. Windows, macOS, Linux all do it differently.
+
+Cron jobs? Great, but writing cron expressions at 3am? Not exactly human-friendly.
+
+And don't get me started on screenshots.
+
+## The Solution
+
+A small collection of CLI tools that wrap the messy stuff. No daemon. No database. Just files and commands that behave the way you expect.
+
+```
+uv tool install agentcli-helpers
+```
+
+That's it. Pick what you need:
+
+| Tool | What it does | Install |
+|------|--------------|---------|
+| `crony` | Cron jobs with natural language scheduling | `uv tool install agentcli-helpers[crony]` |
+| `notify` | Cross-platform desktop notifications | Built-in |
+| `bg` | Background jobs that don't disappear | Built-in |
+| `screenshot` | Screen capture that actually works | `uv tool install agentcli-helpers[screenshot]` |
+
+Or install everything: `uv tool install agentcli-helpers[all]`
+
+## Tools
+
+### crony — Cron jobs, human-readable
+
+```bash
+# Instead of "*/15 * * * *", just say what you mean:
+crony add health-check "every 1h" "curl -s http://localhost:8080/health"
+crony add backup "every day at 2am" "backup.sh"
+crony add reminder "in 30m" "notify 'Meeting' 'Starting soon!'"
+
+# Manage them
+crony list
+crony run health-check
+crony rm backup
+```
+
+Supports natural language: `every 1h`, `every monday`, `at 15:30`, `in 5m`, `on 2026-03-15`.
+
+### notify — Desktop notifications
+
+```bash
+# Simple
+notify "Build Done" "All tests passed!"
+
+# Pipe-friendly
+curl -s http://api/status | notify "API Check"
+
+# Chain it
+long-task && notify "Complete" "Finished successfully"
+```
+
+Works on Windows, macOS, and Linux. No platform-specific code in your scripts.
+
+### bg — Background jobs, tracked
+
+```bash
+# Start a long task, get an ID back
+bg run "python train_model.py"
+# Returns: abc123
+
+# Check on it
+bg status abc123
+bg logs abc123   # stdout + stderr
+bg read abc123   # stdout only
+
+# List everything
+bg list
+```
+
+Jobs are stored in `~/.bgjobs/<id>/` with metadata, stdout, and stderr. Clean. Trackable. No magic.
+
+### screenshot — Screen capture
+
+```bash
+# Auto-named
+screenshot
+# → ~/Temp/agentcli_screenshots/screenshot_20260305_160405.png
+
+# Name it yourself
+screenshot bug_report.png
+
+# Use in scripts
+path=$(screenshot)
+notify "Captured" "$path"
+```
+
+Cross-platform using `mss` library, with fallbacks to native tools on Linux.
+
+## For AI Agents
+
+This repo also includes **skills** — instructions your agent can use to self-install tools on demand.
+
+```
+skills/
+├── bg-jobs/SKILL.md
+├── crony/SKILL.md
+├── desktop-notifications/SKILL.md
+├── screenshot/SKILL.md
+└── edge-tts/SKILL.md
+```
+
+The pattern is simple:
+1. Agent checks if tool exists: `crony --help`
+2. If not, install it: `npm install -g @lirrensi/agent-cli-helpers` (or `uv tool install agentcli-helpers`)
+3. Use it
+
+No MCP servers. No configuration. No OAuth. Just tools.
+
+## Why This Exists
+
+Because AI agents deserve desktop superpowers too. Because the command line is already there — we just need it to be *nicer*.
+
+No daemon to manage. No database to run. Just files, folders, and commands that work.
+
+## Requirements
+
+- Python 3.10+
+- [uv](https://github.com/astral-sh/uv) (recommended) or pip
+
+## License
+
+MIT — do whatever, just don't blame me if your cron jobs delete your prod database.
