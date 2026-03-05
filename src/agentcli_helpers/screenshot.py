@@ -13,32 +13,6 @@ from datetime import datetime
 import tempfile
 import click
 
-# Try to import mss for cross-platform screenshots
-try:
-    import mss
-    import mss.tools
-
-    HAS_MSS = True
-except ImportError:
-    HAS_MSS = False
-
-
-def screenshot_mss(output_path: str) -> bool:
-    """Take screenshot using mss library (cross-platform)."""
-    with mss.mss() as sct:
-        # Grab all monitors
-        monitors = sct.monitors
-        if len(monitors) <= 1:
-            # Single monitor or just the primary
-            monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-        else:
-            # Multiple monitors - grab the combined virtual screen
-            monitor = sct.monitors[0]
-
-        sct_img = sct.grab(monitor)
-        mss.tools.to_png(sct_img.rgb, sct_img.size, output=output_path)
-        return True
-
 
 def screenshot_native(output_path: str) -> bool:
     """Take screenshot using native OS tools."""
@@ -135,11 +109,8 @@ def main(output: str | None, all_monitors: bool):
     else:
         output_path = auto_name_screenshot()
 
-    # Try mss first, fall back to native
-    if HAS_MSS:
-        success = screenshot_mss(str(output_path))
-    else:
-        success = screenshot_native(str(output_path))
+    # Use native method - mss has issues on some Windows systems
+    success = screenshot_native(str(output_path))
 
     if success:
         click.echo(str(output_path))
