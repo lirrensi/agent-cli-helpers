@@ -4,7 +4,7 @@
 
 ## Overview
 
-AgentCLI Helpers is a collection of 4 independent CLI tools that extend AI agent capabilities with desktop integration. Each tool is a standalone command with no daemon, no database, and no configuration required.
+AgentCLI Helpers is a collection of CLI tools and skills that extend AI agent capabilities with desktop integration. Each tool is a standalone command with no daemon, no database, and no configuration required.
 
 **Installation:**
 ```bash
@@ -324,6 +324,59 @@ Take a screenshot.
 - No native tool available: exits with code 1, suggests install
 - Output path has parent directories: creates them automatically
 - Multiple monitors: captures combined virtual screen (monitor 0)
+
+---
+
+## Skill: tmux — Terminal Session Control
+
+Control tmux/psmux sessions programmatically for SSH, REPLs, and parallel processes. Cross-platform: tmux on Linux/macOS, psmux on Windows.
+
+**Location:** `skills/tmux/`
+
+### Helper: tmx
+
+```bash
+tmx new <name> [cmd]       # Create session
+tmx send <session> "<cmd>" # Send keys
+tmx capture <session> [n]  # Capture output (default 500 lines)
+tmx sync <session> "<cmd>" # Send + wait + capture
+tmx list                   # List sessions
+tmx kill <session>         # Kill session
+```
+
+### Sync Modes
+
+- `--prompt <pattern>` / `-Prompt <pattern>` — Wait for prompt pattern
+- `--timeout <sec>` / `-Timeout <sec>` — Fixed wait N seconds
+
+### Primary Use Case: SSH
+
+```bash
+tmx new server "ssh user@myserver.com"
+tmx sync server "hostname"
+tmx sync server "tail -100 /var/log/app.log" --timeout 5
+tmx capture server
+```
+
+### Installation
+
+| Platform | Tool | Install |
+|----------|------|---------|
+| Linux | tmux | `apt install tmux` |
+| macOS | tmux | `brew install tmux` |
+| Windows | psmux | `winget install psmux` |
+
+### Windows (psmux)
+
+psmux is a native Windows tmux implementation — same commands, same config. 95%+ tmux syntax compatible.
+
+```powershell
+winget install psmux
+# or: scoop install psmux
+# or: choco install psmux
+```
+
+If issues: download from https://github.com/marlocarlo/psmux/releases
 
 ---
 

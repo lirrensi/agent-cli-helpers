@@ -18,6 +18,7 @@ Available skills:
 | `crony` | Cron jobs with natural language scheduling |
 | `desktop-notifications` | Cross-platform desktop notifications |
 | `screenshot` | Screen capture that actually works |
+| `tmux` | Terminal multiplexer for SSH, REPLs, and parallel agents |
 | `edge-tts` | Text-to-speech using Microsoft's edge-tts |
 
 ## The Problem
@@ -129,6 +130,7 @@ skills/
 ├── crony/SKILL.md
 ├── desktop-notifications/SKILL.md
 ├── screenshot/SKILL.md
+├── tmux/SKILL.md
 └── edge-tts/SKILL.md
 ```
 
