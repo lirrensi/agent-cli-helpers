@@ -37,20 +37,24 @@ And don't get me started on screenshots.
 
 A small collection of CLI tools that wrap the messy stuff. No daemon. No database. Just files and commands that behave the way you expect.
 
-```
-uv tool install agentcli-helpers
+```bash
+# Install from GitHub
+uv tool install "git+https://github.com/lirrensi/agent-cli-helpers"
 ```
 
 That's it. Pick what you need:
 
 | Tool | What it does | Install |
 |------|--------------|---------|
-| `crony` | Cron jobs with natural language scheduling | `uv tool install agentcli-helpers[crony]` |
+| `crony` | Cron jobs with natural language scheduling | `uv tool install "git+https://github.com/lirrensi/agent-cli-helpers#crony"` |
 | `notify` | Cross-platform desktop notifications | Built-in |
 | `bg` | Background jobs that don't disappear | Built-in |
-| `screenshot` | Screen capture that actually works | `uv tool install agentcli-helpers[screenshot]` |
+| `screenshot` | Screen capture that actually works | `uv tool install "git+https://github.com/lirrensi/agent-cli-helpers#screenshot"` |
 
-Or install everything: `uv tool install agentcli-helpers[all]`
+Or install everything:
+```bash
+uv tool install "git+https://github.com/lirrensi/agent-cli-helpers"
+```
 
 ## Tools
 
