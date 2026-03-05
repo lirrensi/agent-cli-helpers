@@ -1,9 +1,4 @@
-"""Cross-platform screenshot CLI.
-
-Usage:
-    screenshot              # Auto-names, outputs path
-    screenshot output.png   # Save to specific file
-"""
+"""Screenshot CLI - uses MSS for Windows (all monitors), native tools elsewhere."""
 
 import sys
 import platform
@@ -14,8 +9,75 @@ import tempfile
 import click
 
 
+def get_virtual_screen_bounds():
+    """Get the bounds of all monitors combined (virtual screen)."""
+    if platform.system() != "Windows":
+        return None
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+
+        # SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN
+        left = user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
+        top = user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
+        width = user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
+        height = user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
+
+        # Sometimes these return 0, fallback to primary screen
+        if width <= 0 or height <= 0:
+            return None
+
+        return (left, top, left + width, top + height)
+    except:
+        return None
+
+
+def screenshot_windows_mss(output_path: str) -> bool:
+    """Take screenshot using MSS library (cross-platform, all monitors)."""
+    try:
+        import mss
+        import mss.tools
+
+        with mss.mss() as sct:
+            # Monitor 0 = all monitors combined
+            monitor = sct.monitors[0]
+            sct_img = sct.grab(monitor)
+            mss.tools.to_png(sct_img.rgb, sct_img.size, output=output_path)
+            return True
+    except Exception as e:
+        click.echo(f"MSS failed: {e}", err=True)
+        return False
+
+
+def screenshot_windows_pil(output_path: str) -> bool:
+    """Take screenshot using PIL ImageGrab (pure Python, no PowerShell)."""
+    try:
+        from PIL import ImageGrab
+
+        # Try to get virtual screen bounds (all monitors)
+        bbox = get_virtual_screen_bounds()
+
+        if bbox:
+            # Capture the entire virtual screen
+            img = ImageGrab.grab(bbox=bbox)
+        else:
+            # Fallback: capture default (usually primary)
+            img = ImageGrab.grab()
+
+        # Save
+        img.save(output_path)
+        return True
+
+    except Exception as e:
+        click.echo(f"PIL ImageGrab failed: {e}", err=True)
+        return False
+
+
 def screenshot_native(output_path: str) -> bool:
-    """Take screenshot using native OS tools."""
+    """Take screenshot using native OS tools (no PowerShell)."""
     system = platform.system()
 
     try:
@@ -53,21 +115,10 @@ def screenshot_native(output_path: str) -> bool:
             return True
 
         elif system == "Windows":
-            # Use PowerShell with .NET
-            ps_script = f'''
-            Add-Type -AssemblyName System.Windows.Forms
-            [System.Windows.Forms.Screen]::PrimaryScreen
-            $bitmap = New-Object System.Drawing.Bitmap([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width, [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height)
-            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-            $graphics.CopyFromScreen([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Location, [System.Drawing.Point]::Empty, [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Size)
-            $bitmap.Save("{output_path}")
-            $graphics.Dispose()
-            $bitmap.Dispose()
-            '''
-            subprocess.run(
-                ["powershell", "-Command", ps_script], check=True, capture_output=True
-            )
-            return True
+            # Try MSS first (works better for all monitors), then fallback to PIL
+            if screenshot_windows_mss(output_path):
+                return True
+            return screenshot_windows_pil(output_path)
 
         else:
             return False
@@ -109,7 +160,7 @@ def main(output: str | None, all_monitors: bool):
     else:
         output_path = auto_name_screenshot()
 
-    # Use native method - mss has issues on some Windows systems
+    # Use MSS on Windows (captures all monitors), fallback to PIL
     success = screenshot_native(str(output_path))
 
     if success:
