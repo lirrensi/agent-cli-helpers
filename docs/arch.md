@@ -112,10 +112,25 @@ bg = "agentcli_helpers.bg:main"
 ```
 {tempdir}/agentcli_bgjobs/
 └── {job_id}/
-    ├── meta.json    # {"id", "cmd", "started_at", "status", "pid"}
+    ├── meta.json    # {"id", "cmd", "started_at", "status", "pid", "finished_at", "exit_code", ...}
     ├── stdout.txt   # Captured stdout
     └── stderr.txt   # Captured stderr
 ```
+
+### Runtime Metadata
+
+`meta.json` is the canonical job record and MUST preserve the base fields `id`, `cmd`, `started_at`, `status`, and `pid`.
+
+The record MUST also support terminal lifecycle fields:
+- `finished_at` — ISO timestamp when the job exits
+- `exit_code` — integer exit code when known
+
+The record MAY include refreshed runtime inspection fields used by `bg list` and `bg status`, such as:
+- `elapsed_seconds`
+- `memory_bytes`
+- `cpu_percent`
+
+Runtime inspection fields are best-effort snapshots, not guaranteed historical telemetry.
 
 ### Job Lifecycle
 
@@ -153,6 +168,8 @@ check_job_alive(job_id) -> bool
             --> True if no OSError
 ```
 
+Process inspection SHOULD be refreshed during `list` and `status` calls. On supported platforms, inspection reads the live process state and enriches the job record with runtime details such as elapsed time, memory usage, and CPU usage. If a metric is unavailable or too expensive to derive reliably, it MAY be omitted.
+
 ### List Behavior
 
 ```
@@ -165,11 +182,17 @@ list_jobs() -> list[dict]
     |       +-- if status == "running" and not check_job_alive():
     |               |
     |               +-- update_job_status("completed")
+    |       |
+    |       +-- refresh_process_stats(job)
     |
     +-- sort by started_at descending
     |
     +-- return jobs
 ```
+
+`bg list` is an operational view, not just a metadata dump. It SHOULD surface live process information such as PID, elapsed runtime, and memory usage in addition to stored job metadata.
+
+`bg status` MUST return the same enriched metadata model for a single job.
 
 ---
 
@@ -189,6 +212,14 @@ crony = "agentcli_helpers.crony:main"
 - `crony rm NAME` — Remove job
 - `crony run NAME` — Run immediately
 - `crony logs NAME` — View logs
+
+### Job Data Model
+
+Stored jobs preserve the schedule definition (`type`, `schedule` or `interval`, `cron_expr` when applicable) plus execution metadata such as `created_at`.
+
+For display and automation, list responses MUST enrich each job with a `next_run` value when derivable:
+- One-off jobs use the stored scheduled timestamp
+- Recurring jobs compute the next upcoming occurrence from the stored cron expression or interval definition
 
 ### Storage
 
@@ -282,6 +313,18 @@ sync_jobs() -> dict
     |
     +-- return stored
 ```
+
+### List Rendering
+
+`crony list` is an operational view and MUST show upcoming execution timing when it can be derived.
+
+Before rendering list output:
+- one-off jobs reuse stored `next_run`
+- recurring jobs compute the next occurrence from the canonical schedule fields
+
+Human-readable list output SHOULD include `Name`, `Type`, `Schedule`, `Next Run`, and `Command`.
+
+JSON list output SHOULD include the same computed `next_run` field so scripts and agents can reason about upcoming execution.
 
 ---
 

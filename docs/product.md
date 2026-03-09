@@ -92,7 +92,8 @@ List all background jobs.
 - `--json` — Output as JSON array
 
 **Output (human-readable):**
-- Table with columns: ID, Status, Started, Command
+- Table with columns: ID, Status, PID, Started, Elapsed, Memory, Command
+- Implementations MAY include CPU when available
 - Status colors: yellow=running, green=completed, red=failed
 
 **Output (JSON):**
@@ -103,7 +104,12 @@ List all background jobs.
     "cmd": "python script.py",
     "started_at": "2026-03-05T10:00:00",
     "status": "running",
-    "pid": 12345
+    "pid": 12345,
+    "elapsed_seconds": 42,
+    "memory_bytes": 104857600,
+    "cpu_percent": 3.2,
+    "finished_at": null,
+    "exit_code": null
   }
 ]
 ```
@@ -111,6 +117,8 @@ List all background jobs.
 **Behavior:**
 - Automatically checks if running processes are still alive
 - Updates status to "completed" if process has exited
+- Refreshes live process details before rendering list output
+- Live resource metrics are best-effort and MAY be omitted on platforms where they cannot be read reliably
 
 #### `bg status JOB_ID`
 
@@ -120,10 +128,11 @@ Check job status.
 - `JOB_ID` — Job identifier (6 chars)
 
 **Output:**
-- Full job metadata as JSON
+- Full enriched job metadata as JSON, including live process stats while running and terminal fields such as `finished_at` and `exit_code` after completion
 
 **Behavior:**
 - If job was "running" but process is dead, updates status to "completed"
+- Refreshes process details before returning output
 
 #### `bg read JOB_ID`
 
@@ -182,6 +191,7 @@ Jobs stored in: `{tempdir}/agentcli_bgjobs/{job_id}/`
 
 - Job ID not found: exits with code 1, error message to stderr
 - Process already dead when checking status: auto-updates to "completed"
+- Live metrics such as memory and CPU are best-effort and MAY be missing when the host platform does not expose them cheaply
 - Windows: uses `CREATE_NEW_PROCESS_GROUP` + `DETACHED_PROCESS`
 - Unix: uses `start_new_session` for full detachment
 
@@ -226,10 +236,18 @@ List all cron jobs.
 - `--json` — Output as JSON
 - `--sync` — Force sync with OS scheduler
 
+**Output (human-readable):**
+- Table with columns: Name, Type, Schedule, Next Run, Command
+
+**Output (JSON):**
+- Job objects include computed next-run data when derivable
+
 **Behavior:**
 - Auto-syncs with OS scheduler on every call (reconciles jobs.json with crontab/Task Scheduler)
 - Finds orphaned tasks in OS and adds to index
 - Re-registers jobs missing from OS
+- Calculates the next upcoming execution time for recurring jobs before rendering list output
+- One-off jobs use their stored scheduled timestamp as `next_run`
 
 #### `crony rm NAME`
 

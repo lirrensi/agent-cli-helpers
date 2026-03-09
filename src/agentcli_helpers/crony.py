@@ -26,6 +26,7 @@ import click
 # Check for optional dependencies
 try:
     import dateparser
+    from croniter import croniter
 except ImportError:
     click.echo("Error: crony requires extra dependencies.", err=True)
     click.echo("Install with: uv tool install agentcli-helpers[crony]", err=True)
@@ -53,6 +54,80 @@ def save_jobs(jobs: dict):
     """Save jobs to storage."""
     ensure_crony_dir()
     JOBS_FILE.write_text(json.dumps(jobs, indent=2))
+
+
+def parse_iso_timestamp(value: str | None) -> datetime | None:
+    """Parse an ISO timestamp safely."""
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def calculate_once_next_run(job: dict) -> str | None:
+    """Normalize the next run value for a one-off job."""
+    next_run = parse_iso_timestamp(job.get("next_run"))
+    if next_run:
+        return next_run.isoformat()
+
+    schedule = job.get("schedule")
+    if not schedule:
+        return None
+
+    parsed = dateparser.parse(
+        schedule,
+        settings={
+            "PREFER_DATES_FROM": "future",
+            "TIMEZONE": "local",
+        },
+    )
+    return parsed.isoformat() if parsed else None
+
+
+def calculate_recurring_next_run(job: dict) -> str | None:
+    """Calculate the next occurrence for a recurring job."""
+    cron_expr = job.get("cron_expr")
+    if not cron_expr:
+        return None
+
+    created_at = parse_iso_timestamp(job.get("created_at"))
+    base_time = datetime.now(created_at.tzinfo) if created_at else datetime.now()
+
+    try:
+        next_run = croniter(cron_expr, base_time).get_next(datetime)
+    except (ValueError, TypeError, KeyError):
+        return None
+
+    return next_run.isoformat()
+
+
+def enrich_job(job: dict) -> dict:
+    """Return a copy of a job with computed next_run."""
+    enriched = dict(job)
+
+    if enriched.get("type") == "recurring":
+        enriched["next_run"] = calculate_recurring_next_run(enriched)
+    else:
+        enriched["next_run"] = calculate_once_next_run(enriched)
+
+    return enriched
+
+
+def enrich_jobs(jobs: dict) -> dict:
+    """Return a copy of jobs enriched with computed next_run."""
+    return {name: enrich_job(job) for name, job in jobs.items()}
+
+
+def format_display_timestamp(value: str | None) -> str:
+    """Format a timestamp for table output."""
+    timestamp = parse_iso_timestamp(value)
+    if not timestamp:
+        return "unknown"
+
+    return timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def parse_schedule(schedule: str) -> dict:
@@ -507,7 +582,7 @@ def list_cmd(json_output: bool, sync: bool):
     Automatically syncs with OS scheduler to recover orphaned tasks.
     """
     # Always sync on list to auto-heal
-    jobs = sync_jobs() if sync else load_jobs()
+    jobs = enrich_jobs(sync_jobs() if sync else load_jobs())
 
     if json_output:
         click.echo(json.dumps(jobs, indent=2))
@@ -524,6 +599,7 @@ def list_cmd(json_output: bool, sync: bool):
         table.add_column("Name", style="cyan")
         table.add_column("Type", style="yellow")
         table.add_column("Schedule", style="green")
+        table.add_column("Next Run", style="blue")
         table.add_column("Command", style="white", max_width=40)
 
         for name, job in jobs.items():
@@ -531,6 +607,7 @@ def list_cmd(json_output: bool, sync: bool):
                 name,
                 job.get("type", "?"),
                 job.get("interval") or job.get("schedule", "?"),
+                format_display_timestamp(job.get("next_run")),
                 job.get("cmd", "?")[:40],
             )
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentcli-helpers"
-version = "0.3.0"
+version = "0.4.0"
 description = "Desktop assistant CLI tools for AI agents - crony, notify, bg, screenshot"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,11 +12,13 @@ dependencies = [
     "click>=8.1.0",
     "rich>=13.0.0",
     "pillow>=10.0.0",
+    "psutil>=6.0.0",
 ]
 
 [project.optional-dependencies]
 crony = [
     "dateparser>=1.2.0",
+    "croniter>=3.0.0",
     "schedule>=1.2.0",
 ]
 screenshot = [
