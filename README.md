@@ -20,6 +20,7 @@ Available skills:
 | `screenshot` | Screen capture that actually works |
 | `tmux` | Terminal multiplexer for SSH, REPLs, and parallel agents |
 | `edge-tts` | Text-to-speech using Microsoft's edge-tts |
+| `memory-bank` | Lightweight persistent memory across conversations |
 
 ## The Problem
 
@@ -133,9 +134,10 @@ skills/
 ├── bg-jobs/SKILL.md
 ├── crony/SKILL.md
 ├── desktop-notifications/SKILL.md
+├── edge-tts/SKILL.md
+├── memory-bank/SKILL.md
 ├── screenshot/SKILL.md
-├── tmux/SKILL.md
-└── edge-tts/SKILL.md
+└── tmux/SKILL.md
 ```
 
 The pattern is simple:
