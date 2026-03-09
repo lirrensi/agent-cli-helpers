@@ -9,7 +9,7 @@ description: >
 
 # Crony Skill
 
-Manage cron jobs with natural language scheduling.
+Manage cron jobs with natural language scheduling and inspect computed upcoming run times.
 
 ## Installation Check
 
@@ -32,8 +32,11 @@ crony add <name> <schedule> <command>
 ### List Jobs
 ```bash
 crony list
+crony list --sync
 crony list --json
 ```
+
+`crony list` shows a `Next Run` column for one-off and recurring jobs. `crony list --json` includes a computed `next_run` field for each job.
 
 ### Remove Job
 ```bash
@@ -54,17 +57,17 @@ crony logs <name>
 
 ### One-off Jobs
 ```bash
-crony add backup "in 5m" "backup.sh"
-crony add report "at 15:30" "send_report.py"
-crony add deploy "on 2026-03-10" "deploy.sh"
+crony add backup "in 5m" "python --version"
+crony add report "at 15:30" "python send_report.py"
+crony add deploy "on 2026-03-10" "python deploy.py"
 ```
 
 ### Recurring Jobs
 ```bash
-crony add ping "every 1h" "curl http://api/ping"
-crony add cleanup "every 24h" "cleanup.sh"
-crony add weekly "every monday" "weekly_report.sh"
-crony add weekday "every weekday" "daily_check.py"
+crony add ping "every 1h" "python --version"
+crony add cleanup "every 24h" "python cleanup.py"
+crony add weekly "every monday" "python weekly_report.py"
+crony add weekday "every weekday" "python daily_check.py"
 ```
 
 ### Interval Syntax
@@ -77,16 +80,20 @@ crony add weekday "every weekday" "daily_check.py"
 
 ```bash
 # Health check every hour
-crony add health "every 1h" "curl -s http://localhost:8080/health"
+crony add health "every 1h" "python --version"
 
 # Daily backup
-crony add backup "every 24h" "/home/user/backup.sh"
+crony add backup "every 24h" "python backup.py"
 
 # Weekly report
 crony add report "every friday" "python generate_report.py"
 
 # One-time reminder
-crony add remind "in 30m" "notify 'Meeting' 'Team sync in 5 min!'"
+crony add remind "in 30m" "python --version"
+
+# Inspect upcoming run times
+crony list
+crony list --json
 ```
 
 ## Platform Support

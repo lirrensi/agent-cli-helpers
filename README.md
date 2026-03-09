@@ -17,6 +17,7 @@ Available skills:
 | `bg-jobs` | Background jobs that don't disappear |
 | `crony` | Cron jobs with natural language scheduling |
 | `desktop-notifications` | Cross-platform desktop notifications |
+| `document-extractor` | Convert PDFs, Office docs, media, and other inputs to Markdown |
 | `screenshot` | Screen capture that actually works |
 | `tmux` | Terminal multiplexer for SSH, REPLs, and parallel agents |
 | `edge-tts` | Text-to-speech using Microsoft's edge-tts |
@@ -134,6 +135,7 @@ skills/
 ├── bg-jobs/SKILL.md
 ├── crony/SKILL.md
 ├── desktop-notifications/SKILL.md
+├── document-extractor/SKILL.md
 ├── edge-tts/SKILL.md
 ├── memory-bank/SKILL.md
 ├── screenshot/SKILL.md
