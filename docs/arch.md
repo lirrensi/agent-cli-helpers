@@ -143,13 +143,32 @@ create_job(cmd) -> job_id
     |
     +-- write(meta.json, status="running")
     |
-    +-- subprocess.Popen(cmd, shell=True, ...)
+    +-- Windows:
     |       |
-    |       +-- Windows: CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
-    |       |
-    |       +-- Unix: start_new_session
+    |       +-- build_windows_wrapped_command(job_id, cmd)
+    |       |       |
+    |       |       +-- prefer pwsh -> powershell -> cmd.exe
+    |       |       +-- write runner.ps1 or runner.cmd
+    |       |       +-- if PowerShell exists, write launcher.ps1
     |
-    +-- update(meta.json, pid=proc.pid)
+    +-- Windows with PowerShell:
+    |       |
+    |       +-- Start-Process -WindowStyle Hidden -RedirectStandard* -PassThru
+    |       +-- persist returned PID to meta.json
+    |
+    +-- Windows fallback without PowerShell:
+    |       |
+    |       +-- subprocess.Popen(wrapped_cmd, ...)
+    |       +-- CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+    |       |
+    +-- Unix:
+    |       |
+    |       +-- build_wrapped_command(job_id, cmd)
+    |       +-- shell wrapper writes exit_code.txt
+    |       +-- subprocess.Popen(wrapped_cmd, ...)
+    |       +-- start_new_session
+    |
+    +-- fallback path updates meta.json with proc.pid
     |
     +-- return job_id
 ```
@@ -161,11 +180,11 @@ check_job_alive(job_id) -> bool
     |
     +-- get job metadata (pid)
     |
-    +-- Windows: subprocess.run(["tasklist", "/FI", f"PID eq {pid}"])
-    |       --> True if pid in output
-    |
-    +-- Unix: os.kill(pid, 0)
-            --> True if no OSError
+    +-- inspect_process(pid) via psutil
+            |
+            +-- process exists and is_running() --> True
+            |
+            +-- missing/zombie/error --> False
 ```
 
 Process inspection SHOULD be refreshed during `list` and `status` calls. On supported platforms, inspection reads the live process state and enriches the job record with runtime details such as elapsed time, memory usage, and CPU usage. If a metric is unavailable or too expensive to derive reliably, it MAY be omitted.

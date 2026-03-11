@@ -65,7 +65,7 @@ Send a desktop notification.
 
 ## Tool: bg — Background Jobs
 
-Run and track background jobs with persistent storage and status monitoring.
+Run and track short-lived background jobs with runtime state and status monitoring.
 
 ### Commands
 
@@ -83,6 +83,9 @@ Start a command in the background.
 - Job runs detached from terminal
 - Process continues even if parent shell exits
 - stdout and stderr are captured to files
+- On Windows, commands run in `pwsh` when available, then `powershell`, then `cmd.exe`
+- On Windows, PowerShell-backed jobs are launched hidden so they do not expose a closable console window
+- Windows commands should use syntax for the selected shell unless they explicitly invoke another shell
 
 #### `bg list [--json]`
 
@@ -173,7 +176,7 @@ Remove a job record.
 
 ### Storage
 
-Jobs stored in: `{tempdir}/agentcli_bgjobs/{job_id}/`
+Runtime state stored in: `{tempdir}/agentcli_bgjobs/{job_id}/`
 
 | File | Contents |
 |------|----------|
@@ -192,7 +195,7 @@ Jobs stored in: `{tempdir}/agentcli_bgjobs/{job_id}/`
 - Job ID not found: exits with code 1, error message to stderr
 - Process already dead when checking status: auto-updates to "completed"
 - Live metrics such as memory and CPU are best-effort and MAY be missing when the host platform does not expose them cheaply
-- Windows: uses `CREATE_NEW_PROCESS_GROUP` + `DETACHED_PROCESS`
+- Windows: uses hidden `Start-Process` launches when PowerShell is available, else `CREATE_NEW_PROCESS_GROUP` + `CREATE_NO_WINDOW`
 - Unix: uses `start_new_session` for full detachment
 
 ---

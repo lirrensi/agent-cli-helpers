@@ -12,6 +12,7 @@ Usage:
 import os
 import sys
 import json
+import shutil
 import subprocess
 import signal
 import tempfile
@@ -191,24 +192,142 @@ def format_memory(memory_bytes: int | None) -> str:
     return f"{memory_bytes} B"
 
 
+def write_windows_powershell_runner(job_id: str, cmd: str) -> Path:
+    """Write a PowerShell runner script that persists the exit code."""
+    exit_code_file = exit_code_file_for(job_id)
+    runner_file = job_dir_for(job_id) / "runner.ps1"
+    exit_code_path = str(exit_code_file).replace("'", "''")
+
+    runner_file.write_text(
+        "\n".join(
+            [
+                "$ErrorActionPreference = 'Continue'",
+                "$bgExit = 0",
+                "try {",
+                "    & {",
+                *[f"        {line}" for line in cmd.splitlines() or [cmd]],
+                "    }",
+                "    if ($LASTEXITCODE -is [int]) {",
+                "        $bgExit = $LASTEXITCODE",
+                "    } elseif (-not $?) {",
+                "        $bgExit = 1",
+                "    }",
+                "} catch {",
+                "    $_ | Out-String | Write-Error",
+                "    $bgExit = 1",
+                "}",
+                f"Set-Content -LiteralPath '{exit_code_path}' -Value $bgExit -NoNewline",
+                "exit $bgExit",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    return runner_file
+
+
+def write_windows_command_runner(job_id: str, commands: list[str]) -> Path:
+    """Write a cmd.exe runner script that persists the exit code."""
+    exit_code_file = exit_code_file_for(job_id)
+    runner_file = job_dir_for(job_id) / "runner.cmd"
+    runner_file.write_text(
+        "\n".join(
+            [
+                "@echo off",
+                *commands,
+                "set bg_exit=%errorlevel%",
+                f'> "{exit_code_file}" echo %bg_exit%',
+                "exit /b %bg_exit%",
+            ]
+        )
+    )
+    return runner_file
+
+
+def write_windows_cmd_runner(job_id: str, cmd: str) -> Path:
+    """Write a cmd.exe runner for a raw cmd command string."""
+    return write_windows_command_runner(job_id, [cmd])
+
+
+def windows_ps_literal(value: str) -> str:
+    """Quote a value for safe single-quoted PowerShell usage."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def write_windows_start_launcher(
+    job_id: str,
+    wrapped_cmd: list[str],
+    stdout_path: Path,
+    stderr_path: Path,
+) -> Path:
+    """Write a PowerShell launcher that starts a hidden child process."""
+    launcher_file = job_dir_for(job_id) / "launcher.ps1"
+    arg_lines = [f"    {windows_ps_literal(arg)}" for arg in wrapped_cmd[1:]]
+
+    launcher_file.write_text(
+        "\n".join(
+            [
+                "$argList = @(",
+                *arg_lines,
+                ")",
+                (
+                    f"$proc = Start-Process -FilePath {windows_ps_literal(wrapped_cmd[0])} "
+                    f"-ArgumentList $argList -WindowStyle Hidden "
+                    f"-RedirectStandardOutput {windows_ps_literal(str(stdout_path))} "
+                    f"-RedirectStandardError {windows_ps_literal(str(stderr_path))} "
+                    "-PassThru"
+                ),
+                "$proc.Id",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    return launcher_file
+
+
+def select_windows_shell() -> str | None:
+    """Return the preferred Windows shell executable."""
+    for shell_name in ("pwsh", "powershell"):
+        shell_path = shutil.which(shell_name)
+        if shell_path:
+            return shell_path
+    return None
+
+
+def build_windows_wrapped_command(
+    job_id: str, cmd: str
+) -> tuple[list[str], str | None]:
+    """Build a Windows command and optional launcher shell."""
+    shell_path = select_windows_shell()
+
+    if shell_path:
+        runner_file = write_windows_powershell_runner(job_id, cmd)
+        return (
+            [
+                shell_path,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(runner_file),
+            ],
+            shell_path,
+        )
+
+    runner_file = write_windows_cmd_runner(job_id, cmd)
+    return ["cmd.exe", "/d", "/c", str(runner_file)], None
+
+
 def build_wrapped_command(job_id: str, cmd: str) -> tuple[str | list[str], bool]:
     """Wrap a command so its exit code is persisted."""
     exit_code_file = exit_code_file_for(job_id)
 
     if sys.platform == "win32":
-        runner_file = job_dir_for(job_id) / "runner.cmd"
-        runner_file.write_text(
-            "\n".join(
-                [
-                    "@echo off",
-                    cmd,
-                    "set bg_exit=%errorlevel%",
-                    f'> "{exit_code_file}" echo %bg_exit%',
-                    "exit /b %bg_exit%",
-                ]
-            )
-        )
-        return ["cmd.exe", "/d", "/c", str(runner_file)], False
+        wrapped_cmd, _ = build_windows_wrapped_command(job_id, cmd)
+        return wrapped_cmd, False
 
     wrapped = f'({cmd}); printf "%s" "$?" > {json.dumps(str(exit_code_file))}'
     return wrapped, True
@@ -241,23 +360,52 @@ def create_job(cmd: str) -> str:
 
     update_job_metadata(job_id, metadata)
 
-    # Start the process
-    stdout_file = open(job_dir / "stdout.txt", "w")
-    stderr_file = open(job_dir / "stderr.txt", "w")
-
-    wrapped_cmd, use_shell = build_wrapped_command(job_id, cmd)
+    stdout_path = job_dir / "stdout.txt"
+    stderr_path = job_dir / "stderr.txt"
 
     # Platform-specific process start
     if sys.platform == "win32":
+        wrapped_cmd, launcher_shell = build_windows_wrapped_command(job_id, cmd)
+
+        if launcher_shell:
+            launcher_file = write_windows_start_launcher(
+                job_id, wrapped_cmd, stdout_path, stderr_path
+            )
+            result = subprocess.run(
+                [
+                    launcher_shell,
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(launcher_file),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            pid = int(result.stdout.strip().splitlines()[-1])
+            metadata["pid"] = pid
+            update_job_metadata(job_id, metadata)
+            return job_id
+
+        stdout_file = open(stdout_path, "w")
+        stderr_file = open(stderr_path, "w")
         proc = subprocess.Popen(
             wrapped_cmd,
-            shell=use_shell,
+            shell=False,
             stdout=stdout_file,
             stderr=stderr_file,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.DETACHED_PROCESS,
+            | subprocess.CREATE_NO_WINDOW,
         )
     else:
+        wrapped_cmd, use_shell = build_wrapped_command(job_id, cmd)
+        stdout_file = open(stdout_path, "w")
+        stderr_file = open(stderr_path, "w")
         proc = subprocess.Popen(
             wrapped_cmd,
             shell=use_shell,

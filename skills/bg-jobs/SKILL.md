@@ -24,12 +24,15 @@ uv tool install agentcli-helpers
 
 ## Usage
 
+`bg` runs commands in your platform shell. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, launches jobs without a visible console window when PowerShell is available, and expects shell syntax that matches the shell you expect.
+
 ### Run a Background Job
 ```bash
 bg run "python long_script.py"
 # Returns: abc123 (job ID)
+```
 
-# Windows-friendly quick check
+```powershell
 bg run "python --version"
 ```
 
@@ -62,24 +65,30 @@ bg rm abc123
 ## Workflow Pattern
 
 ```bash
-# 1. Start a long-running task
+# Bash / zsh
 JOB_ID=$(bg run "python train_model.py")
-
-# 2. Do other work...
-
-# 3. Check if done
 bg status $JOB_ID
-
-# 4. Get results
 bg read $JOB_ID
+```
+
+```powershell
+# PowerShell
+$jobId = bg run "python train_model.py"
+bg status $jobId
+bg read $jobId
 ```
 
 ## Job Storage
 
-Jobs are stored in `~/.bgjobs/<id>/`:
+Jobs keep runtime state in your OS temp directory under `agentcli_bgjobs/<id>/`:
 - `meta.json` - Job metadata (`cmd`, `pid`, `status`, `started_at`, optional `finished_at`, optional `exit_code`, and live runtime fields)
 - `stdout.txt` - Standard output
 - `stderr.txt` - Standard error
+
+Windows note:
+- PowerShell syntax works by default when `pwsh` or `powershell` is available
+- Windows background jobs are started hidden, so there is no extra console window to close
+- Use explicit `cmd.exe /d /c "..."` if you need cmd-specific syntax
 
 ## Status Values
 
@@ -107,4 +116,12 @@ bg list
 
 # Read merged logs
 bg logs abc123
+```
+
+```powershell
+# Native PowerShell command
+bg run "Get-Process | Sort-Object CPU -Descending | Select-Object -First 5"
+
+# Force cmd syntax when needed
+bg run "cmd.exe /d /c dir"
 ```

@@ -93,21 +93,23 @@ Works on Windows, macOS, and Linux. No platform-specific code in your scripts.
 
 ### bg — Background jobs, tracked
 
+`bg` runs detached commands without tmux or a second terminal. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, and launches jobs without a visible console window when PowerShell is available.
+
 ```bash
-# Start a long task, get an ID back
-bg run "python train_model.py"
-# Returns: abc123
-
-# Check on it
-bg status abc123
-bg logs abc123   # stdout + stderr
-bg read abc123   # stdout only
-
-# List everything
-bg list
+# Bash / zsh
+JOB_ID=$(bg run "python train_model.py")
+bg status "$JOB_ID"
+bg logs "$JOB_ID"
 ```
 
-Jobs are stored in `~/.bgjobs/<id>/` with metadata, stdout, and stderr. Clean. Trackable. No magic.
+```powershell
+# PowerShell
+$jobId = bg run "python train_model.py"
+bg status $jobId
+bg logs $jobId
+```
+
+Runtime state lives under your OS temp directory in `agentcli_bgjobs/<id>/` with `meta.json`, `stdout.txt`, and `stderr.txt`.
 
 ### screenshot — Screen capture
 
