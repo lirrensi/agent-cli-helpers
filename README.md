@@ -93,23 +93,29 @@ Works on Windows, macOS, and Linux. No platform-specific code in your scripts.
 
 ### bg — Background jobs, tracked
 
-`bg` runs detached commands without tmux or a second terminal. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, and launches jobs without a visible console window when PowerShell is available.
+`bg` runs detached commands without tmux or a second terminal. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, and launches jobs without a visible console window when PowerShell is available. It also supports `bg wait`, `bg wait --match`, and `bg wait-all`.
 
 ```bash
 # Bash / zsh
-JOB_ID=$(bg run "python train_model.py")
-bg status "$JOB_ID"
-bg logs "$JOB_ID"
+JOB_NAME=$(bg run "python train_model.py")
+bg status "$JOB_NAME"
+bg logs "$JOB_NAME"
+bg wait "$JOB_NAME"
+bg wait "$JOB_NAME" --match "ready"
+bg wait-all
 ```
 
 ```powershell
 # PowerShell
-$jobId = bg run "python train_model.py"
-bg status $jobId
-bg logs $jobId
+$jobName = bg run "python train_model.py"
+bg status $jobName
+bg logs $jobName
+bg wait $jobName
+bg wait $jobName --match "ready"
+bg wait-all
 ```
 
-Runtime state lives under your OS temp directory in `agentcli_bgjobs/<id>/` with `meta.json`, `stdout.txt`, and `stderr.txt`.
+Runtime state lives under your OS temp directory in `agentcli_bgjobs/` with `index.json` and per-job `records/<uid>/meta.json`, `stdout.txt`, `stderr.txt`, and `exit_code.txt`.
 
 ### screenshot — Screen capture
 

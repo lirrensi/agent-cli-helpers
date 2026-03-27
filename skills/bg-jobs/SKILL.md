@@ -3,13 +3,13 @@ name: bg-jobs
 description: >
   Run and manage background jobs from the terminal. Use this skill when the user wants
   to execute long-running commands in the background, track job status, read job output,
-  or manage multiple concurrent processes. Provides job ID tracking, status monitoring,
+  or manage multiple concurrent processes. Provides friendly-name tracking, status monitoring,
   and output capture for background tasks.
 ---
 
 # Background Jobs Skill
 
-Run and manage background jobs from the terminal, with live runtime details and persisted exit metadata.
+Run and manage background jobs from the terminal, with friendly names, live runtime details, wait support, and persisted exit metadata.
 
 ## Installation Check
 
@@ -29,7 +29,7 @@ uv tool install agentcli-helpers
 ### Run a Background Job
 ```bash
 bg run "python long_script.py"
-# Returns: abc123 (job ID)
+# Returns: sleepy-pytest (friendly name)
 ```
 
 ```powershell
@@ -42,48 +42,66 @@ bg list
 bg list --json
 ```
 
-`bg list` shows live job details including status, PID, start time, elapsed runtime, memory usage, and command.
+`bg list` shows live job details including name, UID, record state, process state, status, PID, start time, elapsed runtime, and command.
 
 ### Check Job Status
 ```bash
-bg status abc123
+bg status sleepy-pytest
 ```
 
-`bg status <id>` refreshes the job before printing JSON. Running jobs may include `elapsed_seconds`, `memory_bytes`, and `cpu_percent`. Finished jobs can also include `finished_at` and `exit_code`.
+`bg status <ref>` refreshes the job before printing JSON. Use either the friendly name or UID. Running jobs may include `elapsed_seconds`, `memory_bytes`, and `cpu_percent`. Finished jobs can also include `finished_at` and `exit_code`.
+
+### Wait for Completion
+```bash
+bg wait sleepy-pytest
+```
+
+### Wait for Output
+```bash
+bg wait sleepy-pytest --match "needle"
+```
+
+### Wait for All Jobs
+```bash
+bg wait-all
+```
 
 ### Read Job Output
 ```bash
-bg read abc123   # stdout only
-bg logs abc123   # stdout + stderr
+bg read sleepy-pytest   # stdout only
+bg logs sleepy-pytest   # stdout + stderr
 ```
 
 ### Remove Job
 ```bash
-bg rm abc123
+bg rm sleepy-pytest
 ```
 
 ## Workflow Pattern
 
 ```bash
 # Bash / zsh
-JOB_ID=$(bg run "python train_model.py")
-bg status $JOB_ID
-bg read $JOB_ID
+JOB_NAME=$(bg run "python train_model.py")
+bg status $JOB_NAME
+bg read $JOB_NAME
 ```
 
 ```powershell
 # PowerShell
-$jobId = bg run "python train_model.py"
-bg status $jobId
-bg read $jobId
+$jobName = bg run "python train_model.py"
+bg status $jobName
+bg read $jobName
 ```
 
 ## Job Storage
 
-Jobs keep runtime state in your OS temp directory under `agentcli_bgjobs/<id>/`:
-- `meta.json` - Job metadata (`cmd`, `pid`, `status`, `started_at`, optional `finished_at`, optional `exit_code`, and live runtime fields)
-- `stdout.txt` - Standard output
-- `stderr.txt` - Standard error
+Jobs keep runtime state in your OS temp directory under `agentcli_bgjobs/`:
+- `index.json` - Friendly-name and UID lookup index
+- `records/<uid>/meta.json` - Canonical job metadata (`uid`, `name`, `cmd`, `pid`, `status`, `started_at`, optional `finished_at`, optional `exit_code`, and live runtime fields)
+- `records/<uid>/meta.json` - Canonical job metadata (`uid`, `name`, `cmd`, `pid`, `status`, `started_at`, optional `finished_at`, optional `exit_code`, and lightweight event fields such as `last_event_type`, `last_event_at`, `matched_pattern`, and `matched_stream`)
+- `records/<uid>/stdout.txt` - Standard output
+- `records/<uid>/stderr.txt` - Standard error
+- `records/<uid>/exit_code.txt` - Persisted exit code
 
 Windows note:
 - PowerShell syntax works by default when `pwsh` or `powershell` is available
@@ -95,6 +113,10 @@ Windows note:
 - `running` - Process is still active
 - `completed` - Process finished
 - `failed` - Process exited with error
+- `stale` - Record is healthy but PID is gone and no exit code was found
+- `missing` / `corrupt` / `orphaned` - Record problem surfaced by `bg list` / `bg status`
+
+`bg list` also shows a short update marker when a job has a notable event such as completion, failure, or matched output.
 
 ## Examples
 
@@ -109,13 +131,22 @@ bg run "pytest tests/ -v"
 bg run "python -m http.server 8000"
 
 # Check one job as JSON
-bg status abc123
+bg status sleepy-pytest
 
 # Check all running jobs
 bg list
 
+# Wait for a job to finish
+bg wait sleepy-pytest
+
+# Wait for a log line to appear
+bg wait sleepy-pytest --match "ready"
+
+# Wait for all known jobs
+bg wait-all
+
 # Read merged logs
-bg logs abc123
+bg logs sleepy-pytest
 ```
 
 ```powershell

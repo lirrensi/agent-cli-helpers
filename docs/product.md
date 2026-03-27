@@ -65,7 +65,7 @@ Send a desktop notification.
 
 ## Tool: bg — Background Jobs
 
-Run and track short-lived background jobs with runtime state and status monitoring.
+Run and track short-lived background jobs with friendly names, stable UIDs, and separate record/process state.
 
 ### Commands
 
@@ -77,12 +77,14 @@ Start a command in the background.
 - `CMD` — Command to execute (string)
 
 **Output:**
-- Returns 6-character alphanumeric job ID (e.g., `abc123`)
+- Returns a friendly name like `sleepy-pytest`
+- The stable UID stays internal but is shown by `bg list` and `bg status`
 
 **Behavior:**
 - Job runs detached from terminal
 - Process continues even if parent shell exits
 - stdout and stderr are captured to files
+- Names use `<word>-<commandroot>` and gain a short suffix only on collision
 - On Windows, commands run in `pwsh` when available, then `powershell`, then `cmd.exe`
 - On Windows, PowerShell-backed jobs are launched hidden so they do not expose a closable console window
 - Windows commands should use syntax for the selected shell unless they explicitly invoke another shell
@@ -95,64 +97,84 @@ List all background jobs.
 - `--json` — Output as JSON array
 
 **Output (human-readable):**
-- Table with columns: ID, Status, PID, Started, Elapsed, Memory, Command
-- Implementations MAY include CPU when available
+- Table with columns: Name, UID, Record, Process, Status, Update, PID, Started, Elapsed, Command
 - Status colors: yellow=running, green=completed, red=failed
 
 **Output (JSON):**
 ```json
 [
-  {
-    "id": "abc123",
-    "cmd": "python script.py",
-    "started_at": "2026-03-05T10:00:00",
-    "status": "running",
-    "pid": 12345,
-    "elapsed_seconds": 42,
-    "memory_bytes": 104857600,
-    "cpu_percent": 3.2,
-    "finished_at": null,
-    "exit_code": null
-  }
+    {
+      "uid": "b71d4e2f9a8c",
+      "id": "b71d4e2f9a8c",
+      "name": "sleepy-pytest",
+      "cmd": "pytest tests",
+      "record_state": "ok",
+      "process_state": "alive",
+      "status": "running",
+      "pid": 12345,
+      "elapsed_seconds": 42,
+      "memory_bytes": 104857600,
+      "cpu_percent": 3.2,
+      "finished_at": null,
+      "exit_code": null,
+      "last_event_type": null,
+      "last_event_at": null,
+      "matched_pattern": null,
+      "matched_stream": null,
+      "update_marker": null
+    }
 ]
 ```
 
 **Behavior:**
 - Automatically checks if running processes are still alive
-- Updates status to "completed" if process has exited
+- Preserves record problems separately from process state
 - Refreshes live process details before rendering list output
 - Live resource metrics are best-effort and MAY be omitted on platforms where they cannot be read reliably
 
-#### `bg status JOB_ID`
+#### `bg wait JOB_REF`
+
+Wait until a job reaches a terminal state.
+
+#### `bg wait JOB_REF --match PATTERN`
+
+Wait until PATTERN appears in stdout or stderr, then record a matched-output event.
+
+#### `bg wait-all`
+
+Wait until all known jobs are terminal.
+
+#### `bg status JOB_REF`
 
 Check job status.
 
 **Arguments:**
-- `JOB_ID` — Job identifier (6 chars)
+- `JOB_REF` — Friendly name or UID
 
 **Output:**
-- Full enriched job metadata as JSON, including live process stats while running and terminal fields such as `finished_at` and `exit_code` after completion
+- Full enriched job metadata as JSON, including `record_state`, `process_state`, `status`, and terminal fields such as `finished_at` and `exit_code`
+- Also includes `last_event_type`, `last_event_at`, `matched_pattern`, `matched_stream`, and `update_marker`
 
 **Behavior:**
-- If job was "running" but process is dead, updates status to "completed"
 - Refreshes process details before returning output
+- Surfaces corrupted or missing records explicitly instead of normalizing them away
 
-#### `bg read JOB_ID`
+#### `bg read JOB_REF`
 
 Read job stdout.
 
 **Arguments:**
-- `JOB_ID` — Job identifier
+- `JOB_REF` — Friendly name or UID
 
 **Output:**
 - Complete stdout contents
 
-#### `bg logs JOB_ID`
+#### `bg logs JOB_REF`
 
 Read job stdout and stderr.
 
 **Arguments:**
-- `JOB_ID` — Job identifier
+- `JOB_REF` — Friendly name or UID
 
 **Output:**
 ```
@@ -163,12 +185,12 @@ Read job stdout and stderr.
 <stderr content>
 ```
 
-#### `bg rm JOB_ID`
+#### `bg rm JOB_REF`
 
 Remove a job record.
 
 **Arguments:**
-- `JOB_ID` — Job identifier
+- `JOB_REF` — Friendly name or UID
 
 **Behavior:**
 - If job is still running, kills the process first
@@ -176,24 +198,28 @@ Remove a job record.
 
 ### Storage
 
-Runtime state stored in: `{tempdir}/agentcli_bgjobs/{job_id}/`
+Runtime state stored in: `{tempdir}/agentcli_bgjobs/`
 
 | File | Contents |
 |------|----------|
-| `meta.json` | Job metadata (id, cmd, pid, status, timestamps) |
-| `stdout.txt` | Captured stdout |
-| `stderr.txt` | Captured stderr |
+| `index.json` | Friendly-name and UID lookup index |
+| `records/{uid}/meta.json` | Canonical job metadata (uid, name, cmd, pid, status, timestamps, last event fields) |
+| `records/{uid}/stdout.txt` | Captured stdout |
+| `records/{uid}/stderr.txt` | Captured stderr |
+| `records/{uid}/exit_code.txt` | Persisted exit code |
 
 ### Status Values
 
 - `running` — Process is active
 - `completed` — Process finished successfully
 - `failed` — Process exited with non-zero code
+- `stale` — Record is healthy but PID is gone and no exit code was found
+- `missing` / `corrupt` / `orphaned` — Record problem surfaced by `bg list` / `bg status`
 
 ### Edge Cases
 
-- Job ID not found: exits with code 1, error message to stderr
-- Process already dead when checking status: auto-updates to "completed"
+- Job reference not found: exits with code 1, error message to stderr
+- Process already dead when checking status: reported separately from record state
 - Live metrics such as memory and CPU are best-effort and MAY be missing when the host platform does not expose them cheaply
 - Windows: uses hidden `Start-Process` launches when PowerShell is available, else `CREATE_NEW_PROCESS_GROUP` + `CREATE_NO_WINDOW`
 - Unix: uses `start_new_session` for full detachment

@@ -100,30 +100,43 @@ bg = "agentcli_helpers.bg:main"
 ```
 
 ### Commands
-- `bg run "CMD"` — Create background job
+- `bg run "CMD"` — Create background job and return a friendly name
 - `bg list` — List all jobs
-- `bg status JOB_ID` — Get job metadata
-- `bg read JOB_ID` — Read stdout
-- `bg logs JOB_ID` — Read stdout + stderr
-- `bg rm JOB_ID` — Remove job
+- `bg status JOB_REF` — Get job metadata by friendly name or UID
+- `bg wait JOB_REF` — Wait for terminal state
+- `bg wait JOB_REF --match PATTERN` — Wait for output match in stdout/stderr
+- `bg wait-all` — Wait for all known jobs
+- `bg read JOB_REF` — Read stdout
+- `bg logs JOB_REF` — Read stdout + stderr
+- `bg rm JOB_REF` — Remove job
 
 ### Storage
 
 ```
 {tempdir}/agentcli_bgjobs/
-└── {job_id}/
-    ├── meta.json    # {"id", "cmd", "started_at", "status", "pid", "finished_at", "exit_code", ...}
-    ├── stdout.txt   # Captured stdout
-    └── stderr.txt   # Captured stderr
+├── index.json
+└── records/
+    └── {uid}/
+        ├── meta.json    # {"uid", "name", "cmd", "started_at", "status", "pid", "finished_at", "exit_code", "last_event_type", ...}
+        ├── stdout.txt   # Captured stdout
+        ├── stderr.txt   # Captured stderr
+        └── exit_code.txt # Persisted exit code
 ```
 
 ### Runtime Metadata
 
-`meta.json` is the canonical job record and MUST preserve the base fields `id`, `cmd`, `started_at`, `status`, and `pid`.
+`meta.json` is the canonical job record and MUST preserve the base fields `uid`, `name`, `cmd`, `started_at`, `status`, and `pid`.
 
 The record MUST also support terminal lifecycle fields:
 - `finished_at` — ISO timestamp when the job exits
 - `exit_code` — integer exit code when known
+
+The record MAY also track lightweight notable events for list/status surfacing:
+- `last_event_type` — `completed`, `failed`, or `matched_output`
+- `last_event_at` — ISO timestamp for the most recent notable event
+- `matched_pattern` — literal pattern that matched during a wait
+- `matched_stream` — `stdout` or `stderr`
+- `update_marker` — compact human-readable marker used by `bg list`
 
 The record MAY include refreshed runtime inspection fields used by `bg list` and `bg status`, such as:
 - `elapsed_seconds`
@@ -135,17 +148,19 @@ Runtime inspection fields are best-effort snapshots, not guaranteed historical t
 ### Job Lifecycle
 
 ```
-create_job(cmd) -> job_id
+create_job(cmd) -> friendly_name
     |
-    +-- generate_id() --> 6-char alphanumeric
+    +-- generate_uid() --> stable internal UID
+    +-- friendly_name_for(cmd) --> <word>-<commandroot>
     |
-    +-- mkdir(job_dir)
+    +-- mkdir(records/{uid})
     |
     +-- write(meta.json, status="running")
+    +-- upsert index.json (name -> uid, uid -> record path)
     |
     +-- Windows:
     |       |
-    |       +-- build_windows_wrapped_command(job_id, cmd)
+    |       +-- build_windows_wrapped_command(uid, cmd)
     |       |       |
     |       |       +-- prefer pwsh -> powershell -> cmd.exe
     |       |       +-- write runner.ps1 or runner.cmd
@@ -163,46 +178,45 @@ create_job(cmd) -> job_id
     |       |
     +-- Unix:
     |       |
-    |       +-- build_wrapped_command(job_id, cmd)
+    |       +-- build_wrapped_command(uid, cmd)
     |       +-- shell wrapper writes exit_code.txt
     |       +-- subprocess.Popen(wrapped_cmd, ...)
     |       +-- start_new_session
     |
     +-- fallback path updates meta.json with proc.pid
     |
-    +-- return job_id
+    +-- return friendly_name
 ```
 
 ### Status Checking
 
 ```
-check_job_alive(job_id) -> bool
+resolve_job_ref(job_ref) -> uid
     |
-    +-- get job metadata (pid)
+    +-- name -> uid via index.json
+    |
+    +-- uid -> record path via index.json
+    |
+    +-- legacy uid path fallback when needed
     |
     +-- inspect_process(pid) via psutil
             |
-            +-- process exists and is_running() --> True
+            +-- process exists and is_running() --> alive
             |
-            +-- missing/zombie/error --> False
+            +-- missing/zombie/error --> dead / zombie / unknown
 ```
 
-Process inspection SHOULD be refreshed during `list` and `status` calls. On supported platforms, inspection reads the live process state and enriches the job record with runtime details such as elapsed time, memory usage, and CPU usage. If a metric is unavailable or too expensive to derive reliably, it MAY be omitted.
+Process inspection SHOULD be refreshed during `list` and `status` calls. On supported platforms, inspection reads the live process state and enriches the job record with runtime details such as elapsed time, memory usage, and CPU usage. Record problems MUST remain visible even when a live process probe succeeds.
 
 ### List Behavior
 
 ```
 list_jobs() -> list[dict]
     |
-    +-- iterate JOBS_DIR/
+    +-- merge index entries with on-disk records
     |
-    +-- for each job:
-    |       |
-    |       +-- if status == "running" and not check_job_alive():
-    |               |
-    |               +-- update_job_status("completed")
-    |       |
-    |       +-- refresh_process_stats(job)
+    +-- classify record_state independently from process_state
+    +-- refresh process_state live
     |
     +-- sort by started_at descending
     |
@@ -211,7 +225,15 @@ list_jobs() -> list[dict]
 
 `bg list` is an operational view, not just a metadata dump. It SHOULD surface live process information such as PID, elapsed runtime, and memory usage in addition to stored job metadata.
 
-`bg status` MUST return the same enriched metadata model for a single job.
+`bg list` SHOULD also surface a compact update marker when a job has a notable event such as completion, failure, or matched output.
+
+`bg status` MUST return the same enriched metadata model for a single job, including explicit `record_state` and `process_state` fields.
+
+### Wait Behavior
+
+`bg wait` and `bg wait-all` are polling commands over the existing files; they MUST NOT introduce a daemon or database.
+
+For output-match waits, the implementation SHOULD scan stdout/stderr incrementally until the pattern is found or the job exits.
 
 ---
 
