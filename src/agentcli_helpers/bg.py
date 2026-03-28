@@ -82,6 +82,11 @@ if not hasattr(click, "group"):
                     pattern = argv[match_index + 1]
                 return command(job_ref, pattern)
 
+            if cmd_name == "restart":
+                if len(argv) < 2:
+                    raise _MiniClickException(f"Missing argument for {cmd_name}")
+                return command(argv[1])
+
             if len(argv) < 2:
                 raise _MiniClickException(f"Missing argument for {cmd_name}")
             return command(argv[1])
@@ -1178,6 +1183,63 @@ def format_memory(memory_bytes: int | None) -> str:
     return f"{memory_bytes} B"
 
 
+def launch_process_for_job(
+    uid: str, cmd: str, stdout_path: Path, stderr_path: Path
+) -> int:
+    """Launch a process for a job and return its PID."""
+    if sys.platform == "win32":
+        wrapped_cmd, launcher_shell = build_windows_wrapped_command(uid, cmd)
+        if launcher_shell:
+            launcher_file = write_windows_start_launcher(
+                uid, wrapped_cmd, stdout_path, stderr_path
+            )
+            result = subprocess.run(
+                [
+                    launcher_shell,
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(launcher_file),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            return int(result.stdout.strip().splitlines()[-1])
+
+        with (
+            open(stdout_path, "a", encoding="utf-8") as stdout_file,
+            open(stderr_path, "a", encoding="utf-8") as stderr_file,
+        ):
+            proc = subprocess.Popen(
+                wrapped_cmd,
+                shell=False,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW,
+            )
+    else:
+        wrapped_cmd, use_shell = build_wrapped_command(uid, cmd)
+        with (
+            open(stdout_path, "a", encoding="utf-8") as stdout_file,
+            open(stderr_path, "a", encoding="utf-8") as stderr_file,
+        ):
+            proc = subprocess.Popen(
+                wrapped_cmd,
+                shell=use_shell,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                start_new_session=True,
+            )
+
+    return proc.pid
+
+
 def create_job(cmd: str) -> str:
     ensure_jobs_dir()
     uid, name, root = create_record_identity(cmd)
@@ -1218,60 +1280,8 @@ def create_job(cmd: str) -> str:
     stderr_path = stderr_file_for_uid(uid)
 
     try:
-        if sys.platform == "win32":
-            wrapped_cmd, launcher_shell = build_windows_wrapped_command(uid, cmd)
-            if launcher_shell:
-                launcher_file = write_windows_start_launcher(
-                    uid, wrapped_cmd, stdout_path, stderr_path
-                )
-                result = subprocess.run(
-                    [
-                        launcher_shell,
-                        "-NoLogo",
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-ExecutionPolicy",
-                        "Bypass",
-                        "-File",
-                        str(launcher_file),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-                pid = int(result.stdout.strip().splitlines()[-1])
-                metadata["pid"] = pid
-                write_meta(uid, metadata)
-                return name
-
-            with (
-                open(stdout_path, "w", encoding="utf-8") as stdout_file,
-                open(stderr_path, "w", encoding="utf-8") as stderr_file,
-            ):
-                proc = subprocess.Popen(
-                    wrapped_cmd,
-                    shell=False,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-                    | subprocess.CREATE_NO_WINDOW,
-                )
-        else:
-            wrapped_cmd, use_shell = build_wrapped_command(uid, cmd)
-            with (
-                open(stdout_path, "w", encoding="utf-8") as stdout_file,
-                open(stderr_path, "w", encoding="utf-8") as stderr_file,
-            ):
-                proc = subprocess.Popen(
-                    wrapped_cmd,
-                    shell=use_shell,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    start_new_session=True,
-                )
-
-        metadata["pid"] = proc.pid
+        pid = launch_process_for_job(uid, cmd, stdout_path, stderr_path)
+        metadata["pid"] = pid
         write_meta(uid, metadata)
         return name
     except Exception:
@@ -1317,6 +1327,48 @@ def remove_job(job_ref: str) -> bool:
     remove_index_entry(index, uid)
     save_index(index)
     return True
+
+
+def restart_job(job_ref: str) -> str:
+    """Restart a job by killing the process and starting a new one."""
+    snapshot = load_job_snapshot(job_ref, refresh_process=False)
+    if snapshot is None:
+        raise click.ClickException(f"Job not found: {job_ref}")
+
+    if snapshot.get("record_state") != "ok":
+        raise click.ClickException(
+            f"Job record not available: {job_ref} ({snapshot.get('record_state')})"
+        )
+
+    cmd = snapshot.get("cmd")
+    if not cmd:
+        raise click.ClickException(f"Job has no command: {job_ref}")
+
+    uid = str(snapshot["uid"])
+    name = str(snapshot.get("name") or uid)
+
+    pid = snapshot.get("pid")
+    if snapshot.get("process_state") == "alive" and isinstance(pid, int):
+        kill_process(pid)
+
+    stdout_path = stdout_file_for_uid(uid)
+    stderr_path = stderr_file_for_uid(uid)
+
+    new_pid = launch_process_for_job(uid, cmd, stdout_path, stderr_path)
+
+    meta = load_job_meta(uid)
+    if meta is None:
+        raise click.ClickException(f"Job metadata not found: {job_ref}")
+
+    updated = dict(meta)
+    updated["pid"] = new_pid
+    updated["started_at"] = datetime.now().isoformat()
+    updated["status"] = "running"
+    updated["finished_at"] = None
+    updated["exit_code"] = None
+    write_meta(uid, updated)
+
+    return name
 
 
 @click.group()
@@ -1507,6 +1559,19 @@ def rm(job_ref: str) -> None:
         return
     click.echo(f"Job record not available: {job_ref}", err=True)
     sys.exit(1)
+
+
+@main.command()
+@click.argument("job_ref")
+def restart(job_ref: str) -> None:
+    """Restart a job."""
+    try:
+        name = restart_job(job_ref)
+        click.echo(name)
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 if __name__ == "__main__":

@@ -77,6 +77,13 @@ bg logs sleepy-pytest   # stdout + stderr
 bg rm sleepy-pytest
 ```
 
+### Restart Job
+```bash
+bg restart sleepy-pytest
+```
+
+`bg restart <ref>` kills the process if alive and starts a new one with the same command. Output appends to existing stdout/stderr files (like ctrl+c + run again). The job keeps the same UID and name.
+
 ## Workflow Pattern
 
 ```bash
@@ -147,6 +154,9 @@ bg wait-all
 
 # Read merged logs
 bg logs sleepy-pytest
+
+# Restart a job
+bg restart sleepy-pytest
 ```
 
 ```powershell
