@@ -1233,9 +1233,10 @@ def terminal_job_age_seconds(job: dict, now: datetime | None = None) -> float | 
     return max(0.0, (now - reference_time).total_seconds())
 
 
-def delete_job_records(jobs_to_delete: list[dict]) -> None:
+def delete_job_records(jobs_to_delete: list[dict]) -> set[str]:
+    removed_uids: set[str] = set()
     if not jobs_to_delete:
-        return
+        return removed_uids
 
     index = load_index()
     for job in jobs_to_delete:
@@ -1245,7 +1246,23 @@ def delete_job_records(jobs_to_delete: list[dict]) -> None:
             shutil.rmtree(record_dir, ignore_errors=True)
         if uid:
             remove_index_entry(index, uid)
+            removed_uids.add(uid)
     save_index(index)
+    return removed_uids
+
+
+def iter_storage_record_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    for root in (RECORDS_DIR, JOBS_DIR):
+        if not root.exists():
+            continue
+        for entry in root.iterdir():
+            if not entry.is_dir():
+                continue
+            if root == JOBS_DIR and entry.name == RECORDS_DIR.name:
+                continue
+            dirs.append(entry)
+    return dirs
 
 
 def cleanup_terminal_jobs(jobs: list[dict]) -> set[str]:
@@ -1260,9 +1277,7 @@ def cleanup_terminal_jobs(jobs: list[dict]) -> set[str]:
         jobs_by_uid[uid] = job
         if job.get("record_state") != "ok":
             continue
-        if job.get("process_state") == "alive":
-            continue
-        if not is_terminal_snapshot(job):
+        if job.get("status") == "running" or job.get("process_state") == "alive":
             continue
 
         age_seconds = terminal_job_age_seconds(job, now=now)
@@ -1287,8 +1302,7 @@ def cleanup_terminal_jobs(jobs: list[dict]) -> set[str]:
     to_delete_uids.update(uid for _, uid in recent_candidates[TERMINAL_JOB_CAP:])
 
     jobs_to_delete = [jobs_by_uid[uid] for uid in to_delete_uids if uid in jobs_by_uid]
-    delete_job_records(jobs_to_delete)
-    return to_delete_uids
+    return delete_job_records(jobs_to_delete)
 
 
 def launch_process_for_job(
@@ -1431,9 +1445,32 @@ def remove_job(job_ref: str) -> bool:
 
 def prune_jobs() -> int:
     jobs = scan_jobs_from_disk(refresh_process=True)
-    removable = [job for job in jobs if job.get("process_state") != "alive"]
-    delete_job_records(removable)
-    return len(removable)
+    removed_uids = set(
+        delete_job_records([job for job in jobs if job.get("process_state") != "alive"])
+    )
+
+    for record_dir in iter_storage_record_dirs():
+        uid = record_dir.name
+        if uid in removed_uids:
+            continue
+
+        snapshot = load_record_snapshot(uid, refresh_process=False)
+        if snapshot is None:
+            shutil.rmtree(record_dir, ignore_errors=True)
+            index = load_index()
+            remove_index_entry(index, uid)
+            save_index(index)
+            removed_uids.add(uid)
+            continue
+
+        if (
+            snapshot.get("status") == "running"
+            or snapshot.get("process_state") == "alive"
+        ):
+            continue
+
+        removed_uids.update(delete_job_records([snapshot]))
+    return len(removed_uids)
 
 
 def restart_job(job_ref: str) -> str:

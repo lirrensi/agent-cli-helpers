@@ -131,7 +131,7 @@ List all background jobs.
 - Preserves record problems separately from process state
 - Refreshes live process details before rendering list output
 - Live resource metrics are best-effort and MAY be omitted on platforms where they cannot be read reliably
-- Terminal jobs are pruned opportunistically: keep them for at least 1 hour, cap terminal history at 32 jobs, and evict the oldest terminal records first; running jobs are never removed automatically
+- Terminal jobs are pruned opportunistically: keep them for at least 1 hour, cap history at 32 jobs, and evict the oldest terminal records first; running jobs are never removed automatically
 
 #### `bg wait JOB_REF`
 

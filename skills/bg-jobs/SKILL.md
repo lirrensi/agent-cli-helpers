@@ -117,7 +117,7 @@ Jobs keep runtime state in your OS temp directory under `agentcli_bgjobs/`:
 - `records/<uid>/stderr.txt` - Standard error
 - `records/<uid>/exit_code.txt` - Persisted exit code
 
-Terminal jobs are automatically pruned: keep them for at least 1 hour, cap terminal history at 32 jobs, and evict the oldest terminal jobs first. Running jobs are never evicted automatically.
+Terminal jobs are automatically pruned: keep them for at least 1 hour, cap history at 32 jobs, and evict the oldest terminal jobs first. Running jobs are never evicted automatically.
 
 Windows note:
 - PowerShell syntax works by default when `pwsh` or `powershell` is available
