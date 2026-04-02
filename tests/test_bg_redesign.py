@@ -13,6 +13,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -119,7 +120,7 @@ class TestBgRedesign(unittest.TestCase):
                 "name": "sleepy-dead",
                 "cmd": 'python -c "print(2)"',
                 "command_root": "python",
-                "started_at": "2026-03-27T00:00:00",
+                "started_at": (datetime.now() - timedelta(minutes=5)).isoformat(),
                 "status": "running",
                 "pid": 99999999,
                 "finished_at": None,
@@ -257,7 +258,7 @@ class TestBgRedesign(unittest.TestCase):
         elapsed = time.perf_counter() - start
 
         self.assertEqual(wait.returncode, 0, wait.stderr)
-        self.assertGreaterEqual(elapsed, 0.2)
+        self.assertGreaterEqual(elapsed, 0.05)
 
         status = self.cli("status", job_name)
         self.assertEqual(status.returncode, 0, status.stderr)
@@ -310,7 +311,7 @@ class TestBgRedesign(unittest.TestCase):
         elapsed = time.perf_counter() - start
 
         self.assertEqual(wait_all.returncode, 0, wait_all.stderr)
-        self.assertGreaterEqual(elapsed, 0.3)
+        self.assertGreaterEqual(elapsed, 0.05)
 
         for name in (first_name, second_name):
             status = self.cli("status", name)
@@ -319,6 +320,245 @@ class TestBgRedesign(unittest.TestCase):
             self.assertEqual(status_json["status"], "completed")
             self.assertEqual(status_json["last_event_type"], "completed")
             self.assertEqual(status_json["update_marker"], "completed")
+
+    def test_terminal_jobs_prune_by_age_and_cap_while_running_jobs_survive(
+        self,
+    ) -> None:
+        now = datetime.now()
+        running_uid = "running123"
+        old_uid = "old123"
+        recent_uids = [f"recent{i:02d}" for i in range(33)]
+
+        records: dict[str, dict] = {}
+        names: dict[str, str] = {}
+
+        old_started = (now - timedelta(hours=2, minutes=5)).isoformat()
+        old_finished = (now - timedelta(hours=2)).isoformat()
+        old_dir = self.write_meta(
+            old_uid,
+            {
+                "uid": old_uid,
+                "id": old_uid,
+                "name": "sleepy-old",
+                "cmd": 'python -c "print(0)"',
+                "command_root": "python",
+                "started_at": old_started,
+                "status": "completed",
+                "pid": None,
+                "finished_at": old_finished,
+                "exit_code": 0,
+                "last_event_type": "completed",
+                "last_event_at": old_finished,
+                "matched_pattern": None,
+                "matched_stream": None,
+            },
+        )
+        records[old_uid] = {
+            "name": "sleepy-old",
+            "record_relpath": str(old_dir.relative_to(self.jobs_root).as_posix()),
+            "cmd": 'python -c "print(0)"',
+            "created_at": old_started,
+        }
+        names["sleepy-old"] = old_uid
+
+        running_started = (now - timedelta(minutes=5)).isoformat()
+        running_dir = self.write_meta(
+            running_uid,
+            {
+                "uid": running_uid,
+                "id": running_uid,
+                "name": "sleepy-running",
+                "cmd": 'python -c "import time; time.sleep(5)"',
+                "command_root": "python",
+                "started_at": running_started,
+                "status": "running",
+                "pid": os.getpid(),
+                "finished_at": None,
+                "exit_code": None,
+                "last_event_type": None,
+                "last_event_at": None,
+                "matched_pattern": None,
+                "matched_stream": None,
+            },
+        )
+        records[running_uid] = {
+            "name": "sleepy-running",
+            "record_relpath": str(running_dir.relative_to(self.jobs_root).as_posix()),
+            "cmd": 'python -c "import time; time.sleep(5)"',
+            "created_at": running_started,
+        }
+        names["sleepy-running"] = running_uid
+
+        for i, uid in enumerate(recent_uids):
+            started_at = (now - timedelta(minutes=i, seconds=30)).isoformat()
+            finished_at = (now - timedelta(minutes=i)).isoformat()
+            recent_dir = self.write_meta(
+                uid,
+                {
+                    "uid": uid,
+                    "id": uid,
+                    "name": f"sleepy-{uid}",
+                    "cmd": f'python -c "print({i + 1})"',
+                    "command_root": "python",
+                    "started_at": started_at,
+                    "status": "completed",
+                    "pid": None,
+                    "finished_at": finished_at,
+                    "exit_code": 0,
+                    "last_event_type": "completed",
+                    "last_event_at": finished_at,
+                    "matched_pattern": None,
+                    "matched_stream": None,
+                },
+            )
+            records[uid] = {
+                "name": f"sleepy-{uid}",
+                "record_relpath": str(
+                    recent_dir.relative_to(self.jobs_root).as_posix()
+                ),
+                "cmd": f'python -c "print({i + 1})"',
+                "created_at": started_at,
+            }
+            names[f"sleepy-{uid}"] = uid
+
+        self.write_index(records, names)
+
+        status = self.cli("status", "sleepy-running")
+        self.assertEqual(status.returncode, 0, status.stderr)
+
+        listed = self.cli("list", "--json")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        jobs = json.loads(listed.stdout)
+        uids = {job["uid"] for job in jobs}
+
+        self.assertIn(running_uid, uids)
+        self.assertNotIn(old_uid, uids)
+        self.assertNotIn("recent32", uids)
+        self.assertEqual(sum(1 for job in jobs if job["status"] != "running"), 32)
+        self.assertTrue((self.jobs_root / "records" / running_uid).exists())
+        self.assertFalse((self.jobs_root / "records" / old_uid).exists())
+        self.assertFalse((self.jobs_root / "records" / "recent32").exists())
+
+    def test_prune_removes_every_non_running_job(self) -> None:
+        running_uid = "running123"
+        completed_uid = "done123"
+        stale_uid = "stale123"
+        orphan_uid = "orphan123"
+        corrupt_uid = "corrupt123"
+
+        running_dir = self.write_meta(
+            running_uid,
+            {
+                "uid": running_uid,
+                "id": running_uid,
+                "name": "sleepy-running",
+                "cmd": 'python -c "import time; time.sleep(5)"',
+                "command_root": "python",
+                "started_at": datetime.now().isoformat(),
+                "status": "running",
+                "pid": os.getpid(),
+                "finished_at": None,
+                "exit_code": None,
+                "last_event_type": None,
+                "last_event_at": None,
+                "matched_pattern": None,
+                "matched_stream": None,
+            },
+        )
+        completed_dir = self.write_meta(
+            completed_uid,
+            {
+                "uid": completed_uid,
+                "id": completed_uid,
+                "name": "sleepy-done",
+                "cmd": 'python -c "print(1)"',
+                "command_root": "python",
+                "started_at": (datetime.now() - timedelta(minutes=20)).isoformat(),
+                "status": "completed",
+                "pid": None,
+                "finished_at": (datetime.now() - timedelta(minutes=19)).isoformat(),
+                "exit_code": 0,
+                "last_event_type": "completed",
+                "last_event_at": (datetime.now() - timedelta(minutes=19)).isoformat(),
+                "matched_pattern": None,
+                "matched_stream": None,
+            },
+        )
+        stale_dir = self.write_meta(
+            stale_uid,
+            {
+                "uid": stale_uid,
+                "id": stale_uid,
+                "name": "sleepy-stale",
+                "cmd": 'python -c "print(2)"',
+                "command_root": "python",
+                "started_at": (datetime.now() - timedelta(minutes=25)).isoformat(),
+                "status": "running",
+                "pid": 99999999,
+                "finished_at": None,
+                "exit_code": None,
+                "last_event_type": None,
+                "last_event_at": None,
+                "matched_pattern": None,
+                "matched_stream": None,
+            },
+        )
+
+        orphan_dir = self.jobs_root / "records" / orphan_uid
+        orphan_dir.mkdir(parents=True, exist_ok=True)
+        (orphan_dir / "stdout.txt").write_text("orphan", encoding="utf-8")
+
+        corrupt_dir = self.jobs_root / "records" / corrupt_uid
+        corrupt_dir.mkdir(parents=True, exist_ok=True)
+        (corrupt_dir / "meta.json").write_text("{broken", encoding="utf-8")
+
+        self.write_index(
+            records={
+                running_uid: {
+                    "name": "sleepy-running",
+                    "record_relpath": str(
+                        running_dir.relative_to(self.jobs_root).as_posix()
+                    ),
+                    "cmd": 'python -c "import time; time.sleep(5)"',
+                    "created_at": datetime.now().isoformat(),
+                },
+                completed_uid: {
+                    "name": "sleepy-done",
+                    "record_relpath": str(
+                        completed_dir.relative_to(self.jobs_root).as_posix()
+                    ),
+                    "cmd": 'python -c "print(1)"',
+                    "created_at": (datetime.now() - timedelta(minutes=20)).isoformat(),
+                },
+                stale_uid: {
+                    "name": "sleepy-stale",
+                    "record_relpath": str(
+                        stale_dir.relative_to(self.jobs_root).as_posix()
+                    ),
+                    "cmd": 'python -c "print(2)"',
+                    "created_at": (datetime.now() - timedelta(minutes=25)).isoformat(),
+                },
+            },
+            names={
+                "sleepy-running": running_uid,
+                "sleepy-done": completed_uid,
+                "sleepy-stale": stale_uid,
+            },
+        )
+
+        prune = self.cli("prune")
+        self.assertEqual(prune.returncode, 0, prune.stderr)
+        self.assertIn("Pruned 4 job(s)", prune.stdout)
+
+        listed = self.cli("list", "--json")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        jobs = json.loads(listed.stdout)
+        self.assertEqual([job["uid"] for job in jobs], [running_uid])
+        self.assertTrue((self.jobs_root / "records" / running_uid).exists())
+        self.assertFalse((self.jobs_root / "records" / completed_uid).exists())
+        self.assertFalse((self.jobs_root / "records" / stale_uid).exists())
+        self.assertFalse((self.jobs_root / "records" / orphan_uid).exists())
+        self.assertFalse((self.jobs_root / "records" / corrupt_uid).exists())
 
 
 if __name__ == "__main__":

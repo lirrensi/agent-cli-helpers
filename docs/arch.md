@@ -109,6 +109,7 @@ bg = "agentcli_helpers.bg:main"
 - `bg read JOB_REF` — Read stdout
 - `bg logs JOB_REF` — Read stdout + stderr
 - `bg rm JOB_REF` — Remove job
+- `bg prune` — Remove every job that is not currently running
 
 ### Storage
 
@@ -227,7 +228,18 @@ list_jobs() -> list[dict]
 
 `bg list` SHOULD also surface a compact update marker when a job has a notable event such as completion, failure, or matched output.
 
+### Retention / Cleanup
+
+Background job storage is self-pruning.
+
+- Running jobs are never auto-removed.
+- Terminal jobs are kept for 1 hour by default.
+- If more than 32 terminal jobs exist, the oldest terminal jobs are removed first even if they are younger than 1 hour.
+- `scan_jobs_from_disk()` and `load_job_snapshot()` perform cleanup opportunistically during normal CLI calls.
+
 `bg status` MUST return the same enriched metadata model for a single job, including explicit `record_state` and `process_state` fields.
+
+`bg prune` is an aggressive cleanup command. It MUST delete every job whose live process is not active, including stale and broken records, while leaving running jobs untouched.
 
 ### Wait Behavior
 

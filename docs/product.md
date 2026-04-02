@@ -131,6 +131,7 @@ List all background jobs.
 - Preserves record problems separately from process state
 - Refreshes live process details before rendering list output
 - Live resource metrics are best-effort and MAY be omitted on platforms where they cannot be read reliably
+- Terminal jobs are pruned opportunistically: keep them for at least 1 hour, cap terminal history at 32 jobs, and evict the oldest terminal records first; running jobs are never removed automatically
 
 #### `bg wait JOB_REF`
 
@@ -196,9 +197,20 @@ Remove a job record.
 - If job is still running, kills the process first
 - Removes all job files from storage
 
+#### `bg prune`
+
+Remove every job that is not currently running.
+
+**Behavior:**
+- Keeps all running jobs intact
+- Deletes completed, failed, stale, missing, corrupt, and orphaned jobs
+- Acts as an aggressive privacy cleanup / storage reset for terminal state
+
 ### Storage
 
 Runtime state stored in: `{tempdir}/agentcli_bgjobs/`
+
+Terminal job records are self-pruning under the retention policy above.
 
 | File | Contents |
 |------|----------|

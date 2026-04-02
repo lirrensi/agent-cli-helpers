@@ -87,6 +87,9 @@ if not hasattr(click, "group"):
                     raise _MiniClickException(f"Missing argument for {cmd_name}")
                 return command(argv[1])
 
+            if cmd_name == "prune":
+                return command()
+
             if len(argv) < 2:
                 raise _MiniClickException(f"Missing argument for {cmd_name}")
             return command(argv[1])
@@ -113,6 +116,8 @@ JOBS_DIR = Path(tempfile.gettempdir()) / "agentcli_bgjobs"
 RECORDS_DIR = JOBS_DIR / "records"
 INDEX_FILE = JOBS_DIR / "index.json"
 INDEX_VERSION = 1
+TERMINAL_JOB_RETENTION_SECONDS = 60 * 60
+TERMINAL_JOB_CAP = 32
 
 FRIENDLY_WORDS = [
     "amber",
@@ -954,15 +959,10 @@ def load_job_snapshot(job_ref: str, *, refresh_process: bool = True) -> dict | N
     if uid is None:
         return None
 
-    index = load_index()
-    index_entry = index.get("records", {}).get(uid)
-    snapshot = load_record_snapshot(
-        uid, index_entry=index_entry, refresh_process=refresh_process
-    )
-    if snapshot is None:
-        return None
-
-    return snapshot
+    for snapshot in scan_jobs_from_disk(refresh_process=refresh_process):
+        if str(snapshot.get("uid") or "") == uid:
+            return snapshot
+    return None
 
 
 def load_job_meta(job_ref: str) -> dict | None:
@@ -1145,6 +1145,9 @@ def scan_jobs_from_disk(*, refresh_process: bool = True) -> list[dict]:
             )
 
     save_index(index)
+    deleted_uids = cleanup_terminal_jobs(jobs)
+    if deleted_uids:
+        jobs = [job for job in jobs if str(job.get("uid") or "") not in deleted_uids]
     jobs.sort(
         key=lambda item: item.get("started_at") or item.get("finished_at") or "",
         reverse=True,
@@ -1181,6 +1184,111 @@ def format_memory(memory_bytes: int | None) -> str:
     if memory_bytes >= 1024:
         return f"{memory_bytes / 1024:.0f} KB"
     return f"{memory_bytes} B"
+
+
+def record_dir_for_job(job: dict) -> Path | None:
+    record_path = job.get("record_path")
+    if record_path:
+        return Path(str(record_path))
+
+    uid = str(job.get("uid") or "")
+    if not uid:
+        return None
+
+    if record_dir_for_uid(uid).exists():
+        return record_dir_for_uid(uid)
+    if legacy_record_dir_for(uid).exists():
+        return legacy_record_dir_for(uid)
+    return None
+
+
+def terminal_job_reference_time(job: dict) -> datetime | None:
+    for field in ("finished_at", "last_event_at", "started_at"):
+        timestamp = parse_iso_timestamp(job.get(field))
+        if timestamp is not None:
+            return timestamp
+
+    record_dir = record_dir_for_job(job)
+    if record_dir is None:
+        return None
+
+    try:
+        return datetime.fromtimestamp(record_dir.stat().st_mtime)
+    except (OSError, ValueError):
+        return None
+
+
+def terminal_job_age_seconds(job: dict, now: datetime | None = None) -> float | None:
+    reference_time = terminal_job_reference_time(job)
+    if reference_time is None:
+        return None
+
+    if now is None:
+        now = (
+            datetime.now(reference_time.tzinfo)
+            if reference_time.tzinfo
+            else datetime.now()
+        )
+
+    return max(0.0, (now - reference_time).total_seconds())
+
+
+def delete_job_records(jobs_to_delete: list[dict]) -> None:
+    if not jobs_to_delete:
+        return
+
+    index = load_index()
+    for job in jobs_to_delete:
+        uid = str(job.get("uid") or "")
+        record_dir = record_dir_for_job(job)
+        if record_dir is not None:
+            shutil.rmtree(record_dir, ignore_errors=True)
+        if uid:
+            remove_index_entry(index, uid)
+    save_index(index)
+
+
+def cleanup_terminal_jobs(jobs: list[dict]) -> set[str]:
+    now = datetime.now()
+    candidates: list[tuple[float, str]] = []
+    jobs_by_uid: dict[str, dict] = {}
+
+    for job in jobs:
+        uid = str(job.get("uid") or "")
+        if not uid:
+            continue
+        jobs_by_uid[uid] = job
+        if job.get("record_state") != "ok":
+            continue
+        if job.get("process_state") == "alive":
+            continue
+        if not is_terminal_snapshot(job):
+            continue
+
+        age_seconds = terminal_job_age_seconds(job, now=now)
+        if age_seconds is None:
+            continue
+        candidates.append((age_seconds, uid))
+
+    to_delete_uids = {
+        uid
+        for age_seconds, uid in candidates
+        if age_seconds >= TERMINAL_JOB_RETENTION_SECONDS
+    }
+
+    recent_candidates = sorted(
+        [
+            (age_seconds, uid)
+            for age_seconds, uid in candidates
+            if age_seconds < TERMINAL_JOB_RETENTION_SECONDS
+        ],
+        key=lambda item: item[0],
+    )
+    to_delete_uids.update(uid for _, uid in recent_candidates[TERMINAL_JOB_CAP:])
+
+    jobs_to_delete = [jobs_by_uid[uid] for uid in to_delete_uids if uid in jobs_by_uid]
+    delete_job_records(jobs_to_delete)
+    return to_delete_uids
 
 
 def launch_process_for_job(
@@ -1242,6 +1350,7 @@ def launch_process_for_job(
 
 def create_job(cmd: str) -> str:
     ensure_jobs_dir()
+    scan_jobs_from_disk(refresh_process=True)
     uid, name, root = create_record_identity(cmd)
     record_dir = record_dir_for_uid(uid)
     record_dir.mkdir(parents=True, exist_ok=False)
@@ -1316,17 +1425,15 @@ def remove_job(job_ref: str) -> bool:
         kill_process(pid)
 
     uid = str(snapshot["uid"])
-    record_dir = (
-        record_dir_for_uid(uid)
-        if record_dir_for_uid(uid).exists()
-        else legacy_record_dir_for(uid)
-    )
-    shutil.rmtree(record_dir, ignore_errors=True)
-
-    index = load_index()
-    remove_index_entry(index, uid)
-    save_index(index)
+    delete_job_records([snapshot])
     return True
+
+
+def prune_jobs() -> int:
+    jobs = scan_jobs_from_disk(refresh_process=True)
+    removable = [job for job in jobs if job.get("process_state") != "alive"]
+    delete_job_records(removable)
+    return len(removable)
 
 
 def restart_job(job_ref: str) -> str:
@@ -1570,6 +1677,16 @@ def restart(job_ref: str) -> None:
         click.echo(name)
     except click.ClickException:
         raise
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@main.command()
+def prune() -> None:
+    """Remove every job that is not currently running."""
+    try:
+        removed = prune_jobs()
+        click.echo(f"Pruned {removed} job(s)")
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
 

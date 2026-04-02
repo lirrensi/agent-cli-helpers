@@ -93,7 +93,7 @@ Works on Windows, macOS, and Linux. No platform-specific code in your scripts.
 
 ### bg — Background jobs, tracked
 
-`bg` runs detached commands without tmux or a second terminal. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, and launches jobs without a visible console window when PowerShell is available. It also supports `bg wait`, `bg wait --match`, and `bg wait-all`.
+`bg` runs detached commands without tmux or a second terminal. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, and launches jobs without a visible console window when PowerShell is available. Terminal jobs are auto-pruned after 1 hour and capped at 32 records, while running jobs are never evicted. It also supports `bg wait`, `bg wait --match`, `bg wait-all`, and `bg prune`.
 
 ```bash
 # Bash / zsh

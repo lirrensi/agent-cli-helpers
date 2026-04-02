@@ -77,6 +77,13 @@ bg logs sleepy-pytest   # stdout + stderr
 bg rm sleepy-pytest
 ```
 
+### Prune Non-Running Jobs
+```bash
+bg prune
+```
+
+Deletes every job that is not currently running, including stale or broken records.
+
 ### Restart Job
 ```bash
 bg restart sleepy-pytest
@@ -109,6 +116,8 @@ Jobs keep runtime state in your OS temp directory under `agentcli_bgjobs/`:
 - `records/<uid>/stdout.txt` - Standard output
 - `records/<uid>/stderr.txt` - Standard error
 - `records/<uid>/exit_code.txt` - Persisted exit code
+
+Terminal jobs are automatically pruned: keep them for at least 1 hour, cap terminal history at 32 jobs, and evict the oldest terminal jobs first. Running jobs are never evicted automatically.
 
 Windows note:
 - PowerShell syntax works by default when `pwsh` or `powershell` is available
