@@ -111,6 +111,8 @@ bg = "agentcli_helpers.bg:main"
 - `bg rm JOB_REF` — Remove job
 - `bg prune` — Remove every job that is not currently running
 
+`bg run` hard-bounds launch confirmation to 10 seconds. The launch itself runs in a short-lived helper process so strange shell/launcher behavior cannot block the CLI indefinitely.
+
 ### Storage
 
 ```

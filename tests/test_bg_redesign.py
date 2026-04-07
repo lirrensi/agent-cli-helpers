@@ -15,6 +15,7 @@ import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,62 @@ class TestBgRedesign(unittest.TestCase):
         missing = self.cli("status", name1)
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("Job not found", missing.stderr)
+
+    def test_launch_timeout_cleans_up_partial_state(self) -> None:
+        import click
+        import agentcli_helpers.bg as bg
+
+        cmd = 'python -c "print(1)"'
+        with mock.patch(
+            "agentcli_helpers.bg.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=[sys.executable], timeout=10),
+        ):
+            with self.assertRaises(click.ClickException) as ctx:
+                bg.create_job(cmd)
+
+        self.assertIn("timed out after 10 seconds", str(ctx.exception))
+        self.assertFalse((self.jobs_root / "index.json").exists())
+        records_dir = self.jobs_root / "records"
+        self.assertFalse(records_dir.exists() and any(records_dir.iterdir()))
+
+    def test_create_job_cleans_up_when_initial_write_fails(self) -> None:
+        import agentcli_helpers.bg as bg
+
+        cmd = 'python -c "print(1)"'
+        with mock.patch(
+            "agentcli_helpers.bg.write_meta", side_effect=RuntimeError("boom")
+        ):
+            with self.assertRaises(RuntimeError):
+                bg.create_job(cmd)
+
+        self.assertFalse((self.jobs_root / "index.json").exists())
+        records_dir = self.jobs_root / "records"
+        self.assertFalse(records_dir.exists() and any(records_dir.iterdir()))
+
+    def test_create_job_cleans_up_when_index_write_fails(self) -> None:
+        import agentcli_helpers.bg as bg
+
+        cmd = 'python -c "print(1)"'
+        with mock.patch(
+            "agentcli_helpers.bg.save_index", side_effect=RuntimeError("boom")
+        ):
+            with self.assertRaises(RuntimeError):
+                bg.create_job(cmd)
+
+        self.assertFalse((self.jobs_root / "index.json").exists())
+        records_dir = self.jobs_root / "records"
+        self.assertFalse(records_dir.exists() and any(records_dir.iterdir()))
+
+    def test_run_smoke_captures_pid_on_real_launch(self) -> None:
+        run = self.cli("run", "python -V")
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+        job_name = run.stdout.strip()
+        status = self.cli("status", job_name)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        status_json = json.loads(status.stdout)
+        self.assertIsInstance(status_json["pid"], int)
+        self.assertEqual(status_json["record_state"], "ok")
 
     def test_list_and_status_surface_live_and_dead_process_states(self) -> None:
         live_uid = "live123"

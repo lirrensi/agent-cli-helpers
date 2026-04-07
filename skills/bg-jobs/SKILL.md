@@ -24,7 +24,7 @@ uv tool install agentcli-helpers
 
 ## Usage
 
-`bg` runs commands in your platform shell. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, launches jobs without a visible console window when PowerShell is available, and expects shell syntax that matches the shell you expect.
+`bg` runs commands in your platform shell. `bg run` always returns or fails within 10 seconds, even if shell or launcher behavior is weird. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, launches jobs without a visible console window when PowerShell is available, and expects shell syntax that matches the shell you expect.
 
 ### Run a Background Job
 ```bash

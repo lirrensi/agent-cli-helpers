@@ -88,6 +88,7 @@ Start a command in the background.
 - On Windows, commands run in `pwsh` when available, then `powershell`, then `cmd.exe`
 - On Windows, PowerShell-backed jobs are launched hidden so they do not expose a closable console window
 - Windows commands should use syntax for the selected shell unless they explicitly invoke another shell
+- `bg run` always returns or fails within 10 seconds while confirming the launch
 
 #### `bg list [--json]`
 
@@ -235,6 +236,7 @@ Terminal job records are self-pruning under the retention policy above.
 - Live metrics such as memory and CPU are best-effort and MAY be missing when the host platform does not expose them cheaply
 - Windows: uses hidden `Start-Process` launches when PowerShell is available, else `CREATE_NEW_PROCESS_GROUP` + `CREATE_NO_WINDOW`
 - Unix: uses `start_new_session` for full detachment
+- Launch confirmation is hard-bounded to 10 seconds; launch timeouts clean up the partial job record and index entry before returning an error
 
 ---
 

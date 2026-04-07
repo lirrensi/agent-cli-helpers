@@ -118,6 +118,7 @@ INDEX_FILE = JOBS_DIR / "index.json"
 INDEX_VERSION = 1
 TERMINAL_JOB_RETENTION_SECONDS = 60 * 60
 TERMINAL_JOB_CAP = 32
+BG_LAUNCH_TIMEOUT_SECONDS = 10
 
 FRIENDLY_WORDS = [
     "amber",
@@ -1305,7 +1306,7 @@ def cleanup_terminal_jobs(jobs: list[dict]) -> set[str]:
     return delete_job_records(jobs_to_delete)
 
 
-def launch_process_for_job(
+def launch_process_for_job_inner(
     uid: str, cmd: str, stdout_path: Path, stderr_path: Path
 ) -> int:
     """Launch a process for a job and return its PID."""
@@ -1362,6 +1363,72 @@ def launch_process_for_job(
     return proc.pid
 
 
+def launch_process_for_job(
+    uid: str, cmd: str, stdout_path: Path, stderr_path: Path
+) -> int:
+    """Launch a process for a job and return its PID within a hard deadline."""
+    worker_script = "\n".join(
+        [
+            "import json",
+            "import sys",
+            "from pathlib import Path",
+            "from agentcli_helpers.bg import launch_process_for_job_inner",
+            "payload = json.loads(sys.stdin.read() or '{}')",
+            "pid = launch_process_for_job_inner(",
+            "    payload['uid'],",
+            "    payload['cmd'],",
+            "    Path(payload['stdout_path']),",
+            "    Path(payload['stderr_path']),",
+            ")",
+            "sys.stdout.write(f'{pid}\\n')",
+            "sys.stdout.flush()",
+        ]
+    )
+    payload = {
+        "uid": uid,
+        "cmd": cmd,
+        "stdout_path": str(stdout_path),
+        "stderr_path": str(stderr_path),
+    }
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", worker_script],
+            input=dump_json(payload),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=BG_LAUNCH_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise click.ClickException(
+            f"bg run timed out after {BG_LAUNCH_TIMEOUT_SECONDS} seconds while launching"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        error_text = (exc.stderr or exc.stdout or "").strip()
+        raise click.ClickException(
+            error_text or f"bg run failed while launching (exit code {exc.returncode})"
+        ) from exc
+
+    pid_text = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    try:
+        return int(pid_text)
+    except ValueError as exc:
+        raise click.ClickException(
+            f"bg run returned an invalid PID: {pid_text!r}"
+        ) from exc
+
+
+def cleanup_partial_job_state(uid: str, record_dir: Path) -> None:
+    try:
+        index = load_index()
+        remove_index_entry(index, uid)
+        save_index(index)
+    except Exception:
+        pass
+    shutil.rmtree(record_dir, ignore_errors=True)
+
+
 def create_job(cmd: str) -> str:
     ensure_jobs_dir()
     scan_jobs_from_disk(refresh_process=True)
@@ -1369,49 +1436,45 @@ def create_job(cmd: str) -> str:
     record_dir = record_dir_for_uid(uid)
     record_dir.mkdir(parents=True, exist_ok=False)
 
-    started_at = datetime.now().isoformat()
-    metadata = {
-        "uid": uid,
-        "id": uid,
-        "name": name,
-        "cmd": cmd,
-        "command_root": root,
-        "started_at": started_at,
-        "status": "running",
-        "pid": None,
-        "finished_at": None,
-        "exit_code": None,
-        "last_event_type": None,
-        "last_event_at": None,
-        "matched_pattern": None,
-        "matched_stream": None,
-    }
-
-    index = load_index()
-    upsert_index_entry(
-        index,
-        uid,
-        name,
-        str(record_dir.relative_to(JOBS_DIR).as_posix()),
-        cmd,
-        started_at,
-    )
-    save_index(index)
-    write_meta(uid, metadata)
-
-    stdout_path = stdout_file_for_uid(uid)
-    stderr_path = stderr_file_for_uid(uid)
-
     try:
+        started_at = datetime.now().isoformat()
+        metadata = {
+            "uid": uid,
+            "id": uid,
+            "name": name,
+            "cmd": cmd,
+            "command_root": root,
+            "started_at": started_at,
+            "status": "running",
+            "pid": None,
+            "finished_at": None,
+            "exit_code": None,
+            "last_event_type": None,
+            "last_event_at": None,
+            "matched_pattern": None,
+            "matched_stream": None,
+        }
+
+        index = load_index()
+        upsert_index_entry(
+            index,
+            uid,
+            name,
+            str(record_dir.relative_to(JOBS_DIR).as_posix()),
+            cmd,
+            started_at,
+        )
+        save_index(index)
+        write_meta(uid, metadata)
+
+        stdout_path = stdout_file_for_uid(uid)
+        stderr_path = stderr_file_for_uid(uid)
         pid = launch_process_for_job(uid, cmd, stdout_path, stderr_path)
         metadata["pid"] = pid
         write_meta(uid, metadata)
         return name
     except Exception:
-        index = load_index()
-        remove_index_entry(index, uid)
-        save_index(index)
-        shutil.rmtree(record_dir, ignore_errors=True)
+        cleanup_partial_job_state(uid, record_dir)
         raise
 
 
