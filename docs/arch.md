@@ -109,9 +109,9 @@ bg = "agentcli_helpers.bg:main"
 - `bg read JOB_REF` — Read stdout
 - `bg logs JOB_REF` — Read stdout + stderr
 - `bg rm JOB_REF` — Remove job
-- `bg prune` — Remove every job that is not currently running
+- `bg prune` — Remove every job that is not currently running or launching
 
-`bg run` hard-bounds launch confirmation to 10 seconds. The launch itself runs in a short-lived helper process so strange shell/launcher behavior cannot block the CLI indefinitely.
+`bg run` returns immediately after creating the handle. A detached worker process performs launch confirmation and updates the job record later, so strange shell/launcher behavior cannot block the CLI.
 
 ### Storage
 
@@ -120,7 +120,7 @@ bg = "agentcli_helpers.bg:main"
 ├── index.json
 └── records/
     └── {uid}/
-        ├── meta.json    # {"uid", "name", "cmd", "started_at", "status", "pid", "finished_at", "exit_code", "last_event_type", ...}
+        ├── meta.json    # {"uid", "name", "cmd", "started_at", "status", "pid", "finished_at", "exit_code", "record_issue", "last_event_type", ...}
         ├── stdout.txt   # Captured stdout
         ├── stderr.txt   # Captured stderr
         └── exit_code.txt # Persisted exit code
@@ -129,6 +129,8 @@ bg = "agentcli_helpers.bg:main"
 ### Runtime Metadata
 
 `meta.json` is the canonical job record and MUST preserve the base fields `uid`, `name`, `cmd`, `started_at`, `status`, and `pid`.
+
+The launch lifecycle MAY temporarily use `launching` or `starting` while the detached worker is still starting the target process.
 
 The record MUST also support terminal lifecycle fields:
 - `finished_at` — ISO timestamp when the job exits
@@ -140,6 +142,7 @@ The record MAY also track lightweight notable events for list/status surfacing:
 - `matched_pattern` — literal pattern that matched during a wait
 - `matched_stream` — `stdout` or `stderr`
 - `update_marker` — compact human-readable marker used by `bg list`
+- `record_issue` — launch or record problem surfaced to status callers
 
 The record MAY include refreshed runtime inspection fields used by `bg list` and `bg status`, such as:
 - `elapsed_seconds`
@@ -158,8 +161,10 @@ create_job(cmd) -> friendly_name
     |
     +-- mkdir(records/{uid})
     |
-    +-- write(meta.json, status="running")
+    +-- write(meta.json, status="launching")
     +-- upsert index.json (name -> uid, uid -> record path)
+    |
+    +-- spawn detached worker process
     |
     +-- Windows:
     |       |
@@ -172,7 +177,7 @@ create_job(cmd) -> friendly_name
     +-- Windows with PowerShell:
     |       |
     |       +-- Start-Process -WindowStyle Hidden -RedirectStandard* -PassThru
-    |       +-- persist returned PID to meta.json
+    |       +-- worker persists returned PID to meta.json
     |
     +-- Windows fallback without PowerShell:
     |       |
@@ -234,14 +239,14 @@ list_jobs() -> list[dict]
 
 Background job storage is self-pruning.
 
-- Running jobs are never auto-removed.
+- Running and launching jobs are never auto-removed.
 - Terminal jobs are kept for 1 hour by default.
 - If more than 32 terminal jobs exist, the oldest terminal jobs are removed first even if they are younger than 1 hour.
 - `scan_jobs_from_disk()` and `load_job_snapshot()` perform cleanup opportunistically during normal CLI calls.
 
 `bg status` MUST return the same enriched metadata model for a single job, including explicit `record_state` and `process_state` fields.
 
-`bg prune` is an aggressive cleanup command. It MUST delete every job whose live process is not active, including stale and broken records, while leaving running jobs untouched.
+`bg prune` is an aggressive cleanup command. It MUST delete every job whose live process is not active and whose record is not still launching, including stale and broken records, while leaving running/launching jobs untouched.
 
 ### Wait Behavior
 

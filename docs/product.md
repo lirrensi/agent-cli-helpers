@@ -88,7 +88,7 @@ Start a command in the background.
 - On Windows, commands run in `pwsh` when available, then `powershell`, then `cmd.exe`
 - On Windows, PowerShell-backed jobs are launched hidden so they do not expose a closable console window
 - Windows commands should use syntax for the selected shell unless they explicitly invoke another shell
-- `bg run` always returns or fails within 10 seconds while confirming the launch
+- `bg run` returns immediately after creating the handle; a detached worker finishes launch in the background
 
 #### `bg list [--json]`
 
@@ -99,7 +99,7 @@ List all background jobs.
 
 **Output (human-readable):**
 - Table with columns: Name, UID, Record, Process, Status, Update, PID, Started, Elapsed, Command
-- Status colors: yellow=running, green=completed, red=failed
+- Status colors: yellow=running/launching, green=completed, red=failed
 
 **Output (JSON):**
 ```json
@@ -132,7 +132,7 @@ List all background jobs.
 - Preserves record problems separately from process state
 - Refreshes live process details before rendering list output
 - Live resource metrics are best-effort and MAY be omitted on platforms where they cannot be read reliably
-- Terminal jobs are pruned opportunistically: keep them for at least 1 hour, cap history at 32 jobs, and evict the oldest terminal records first; running jobs are never removed automatically
+- Terminal jobs are pruned opportunistically: keep them for at least 1 hour, cap history at 32 jobs, and evict the oldest terminal records first; running and launching jobs are never removed automatically
 
 #### `bg wait JOB_REF`
 
@@ -155,7 +155,7 @@ Check job status.
 
 **Output:**
 - Full enriched job metadata as JSON, including `record_state`, `process_state`, `status`, and terminal fields such as `finished_at` and `exit_code`
-- Also includes `last_event_type`, `last_event_at`, `matched_pattern`, `matched_stream`, and `update_marker`
+- Also includes `last_event_type`, `last_event_at`, `matched_pattern`, `matched_stream`, `update_marker`, and `record_issue`
 
 **Behavior:**
 - Refreshes process details before returning output
@@ -203,7 +203,7 @@ Remove a job record.
 Remove every job that is not currently running.
 
 **Behavior:**
-- Keeps all running jobs intact
+- Keeps all running and launching jobs intact
 - Deletes completed, failed, stale, missing, corrupt, and orphaned jobs
 - Acts as an aggressive privacy cleanup / storage reset for terminal state
 
@@ -216,7 +216,7 @@ Terminal job records are self-pruning under the retention policy above.
 | File | Contents |
 |------|----------|
 | `index.json` | Friendly-name and UID lookup index |
-| `records/{uid}/meta.json` | Canonical job metadata (uid, name, cmd, pid, status, timestamps, last event fields) |
+| `records/{uid}/meta.json` | Canonical job metadata (uid, name, cmd, pid, status, timestamps, last event fields, launch issues) |
 | `records/{uid}/stdout.txt` | Captured stdout |
 | `records/{uid}/stderr.txt` | Captured stderr |
 | `records/{uid}/exit_code.txt` | Persisted exit code |
@@ -224,6 +224,7 @@ Terminal job records are self-pruning under the retention policy above.
 ### Status Values
 
 - `running` — Process is active
+- `launching` — Handle exists but the detached worker has not finished starting the target yet
 - `completed` — Process finished successfully
 - `failed` — Process exited with non-zero code
 - `stale` — Record is healthy but PID is gone and no exit code was found
@@ -236,7 +237,7 @@ Terminal job records are self-pruning under the retention policy above.
 - Live metrics such as memory and CPU are best-effort and MAY be missing when the host platform does not expose them cheaply
 - Windows: uses hidden `Start-Process` launches when PowerShell is available, else `CREATE_NEW_PROCESS_GROUP` + `CREATE_NO_WINDOW`
 - Unix: uses `start_new_session` for full detachment
-- Launch confirmation is hard-bounded to 10 seconds; launch timeouts clean up the partial job record and index entry before returning an error
+- Launch happens in a detached worker; launch failures preserve the job record and mark it failed instead of deleting the handle
 
 ---
 

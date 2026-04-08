@@ -1,8 +1,8 @@
 # FILE: src/agentcli_helpers/bg.py
-# PURPOSE: Manage detached background jobs with friendly names, stable UIDs, state refresh, and lightweight update events.
-# OWNS: bg CLI storage, naming, process inspection, output capture, wait loops, and record cleanup.
-# EXPORTS: main (CLI entry point), create_job (launch helper), list_jobs (enumeration), load_job_snapshot (lookup), wait helpers
-# DOCS: docs/product.md, docs/arch.md, skills/bg-jobs/SKILL.md, agent_chat/plan_bg_name_redesign_2026-03-27.md, agent_chat/plan_bg_wait_notifications_2026-03-28.md
+# PURPOSE: Manage detached background jobs with friendly names, stable UIDs, async launch workers, state refresh, and lightweight update events.
+# OWNS: bg CLI storage, naming, worker launch, process inspection, output capture, wait loops, and record cleanup.
+# EXPORTS: main (CLI entry point), create_job (launch helper), list_jobs (enumeration), load_job_snapshot (lookup), launch helpers, wait helpers
+# DOCS: docs/product.md, docs/arch.md, skills/bg-jobs/SKILL.md, agent_chat/plan_bg_name_redesign_2026-03-27.md, agent_chat/plan_bg_wait_notifications_2026-03-28.md, agent_chat/plan_bg_immediate_fire_and_forget_2026-04-07.md
 
 """Background job manager CLI."""
 
@@ -119,6 +119,8 @@ INDEX_VERSION = 1
 TERMINAL_JOB_RETENTION_SECONDS = 60 * 60
 TERMINAL_JOB_CAP = 32
 BG_LAUNCH_TIMEOUT_SECONDS = 10
+IN_PROGRESS_JOB_STATUSES = {"running", "launching", "starting"}
+LAUNCHING_JOB_STATUSES = {"launching", "starting"}
 
 FRIENDLY_WORDS = [
     "amber",
@@ -664,10 +666,13 @@ def record_view(
     elapsed_seconds: float | None = None,
     memory_bytes: int | None = None,
     cpu_percent: float | None = None,
+    record_status: str | None = None,
     record_issue: str | None = None,
     record_path: str | None = None,
 ) -> dict:
-    status = derive_status(record_state, process_state, exit_code, finished_at)
+    status = derive_status(
+        record_state, process_state, exit_code, finished_at, record_status
+    )
     return {
         "uid": uid,
         "id": uid,
@@ -698,9 +703,14 @@ def derive_status(
     process_state: str,
     exit_code: int | None,
     finished_at: str | None,
+    record_status: str | None = None,
 ) -> str:
     if record_state != "ok":
         return record_state
+    if record_status in LAUNCHING_JOB_STATUSES:
+        return record_status
+    if record_status in {"completed", "failed"}:
+        return record_status
     if process_state == "alive":
         return "running"
     if exit_code is not None:
@@ -810,6 +820,7 @@ def build_view_from_meta(
         process_state,
         working_meta.get("exit_code"),
         working_meta.get("finished_at"),
+        str(working_meta.get("status") or "") or None,
     )
     return record_view(
         uid=uid,
@@ -829,7 +840,8 @@ def build_view_from_meta(
         elapsed_seconds=elapsed_seconds,
         memory_bytes=memory_bytes,
         cpu_percent=cpu_percent,
-        record_issue=record_issue,
+        record_status=str(working_meta.get("status") or "") or None,
+        record_issue=record_issue or working_meta.get("record_issue"),
         record_path=str(record_path) if record_path else None,
     )
 
@@ -1278,7 +1290,10 @@ def cleanup_terminal_jobs(jobs: list[dict]) -> set[str]:
         jobs_by_uid[uid] = job
         if job.get("record_state") != "ok":
             continue
-        if job.get("status") == "running" or job.get("process_state") == "alive":
+        if (
+            job.get("status") in IN_PROGRESS_JOB_STATUSES
+            or job.get("process_state") == "alive"
+        ):
             continue
 
         age_seconds = terminal_job_age_seconds(job, now=now)
@@ -1363,25 +1378,72 @@ def launch_process_for_job_inner(
     return proc.pid
 
 
-def launch_process_for_job(
+def mark_launch_failed(uid: str, meta: dict, issue: str) -> dict:
+    updated = dict(meta)
+    finished_at = datetime.now().isoformat()
+    updated["pid"] = None
+    updated["status"] = "failed"
+    updated["finished_at"] = finished_at
+    updated["exit_code"] = 1
+    updated["record_issue"] = issue
+    updated["last_event_type"] = "failed"
+    updated["last_event_at"] = finished_at
+    try:
+        write_meta(uid, updated)
+    except Exception:
+        pass
+    return updated
+
+
+def mark_launch_running(uid: str, meta: dict, pid: int) -> dict:
+    updated = dict(meta)
+    updated["pid"] = pid
+    updated["status"] = "running"
+    updated["finished_at"] = None
+    updated["exit_code"] = None
+    updated.pop("record_issue", None)
+    try:
+        write_meta(uid, updated)
+    except Exception:
+        pass
+    return updated
+
+
+def launch_process_for_job_worker(
     uid: str, cmd: str, stdout_path: Path, stderr_path: Path
-) -> int:
-    """Launch a process for a job and return its PID within a hard deadline."""
+) -> None:
+    """Launch the target command and persist launch results."""
+    meta = load_job_meta(uid)
+    if meta is None:
+        return
+
+    try:
+        pid = launch_process_for_job_inner(uid, cmd, stdout_path, stderr_path)
+    except Exception as exc:
+        mark_launch_failed(uid, meta, str(exc))
+        return
+
+    mark_launch_running(uid, meta, pid)
+
+
+def spawn_launch_worker_for_job(
+    uid: str, cmd: str, stdout_path: Path, stderr_path: Path
+) -> None:
+    package_root = Path(__file__).resolve().parents[1]
     worker_script = "\n".join(
         [
             "import json",
             "import sys",
+            f"sys.path.insert(0, {str(package_root)!r})",
             "from pathlib import Path",
-            "from agentcli_helpers.bg import launch_process_for_job_inner",
+            "from agentcli_helpers.bg import launch_process_for_job_worker",
             "payload = json.loads(sys.stdin.read() or '{}')",
-            "pid = launch_process_for_job_inner(",
+            "launch_process_for_job_worker(",
             "    payload['uid'],",
             "    payload['cmd'],",
             "    Path(payload['stdout_path']),",
             "    Path(payload['stderr_path']),",
             ")",
-            "sys.stdout.write(f'{pid}\\n')",
-            "sys.stdout.flush()",
         ]
     )
     payload = {
@@ -1391,32 +1453,33 @@ def launch_process_for_job(
         "stderr_path": str(stderr_path),
     }
 
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", worker_script],
-            input=dump_json(payload),
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=BG_LAUNCH_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise click.ClickException(
-            f"bg run timed out after {BG_LAUNCH_TIMEOUT_SECONDS} seconds while launching"
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        error_text = (exc.stderr or exc.stdout or "").strip()
-        raise click.ClickException(
-            error_text or f"bg run failed while launching (exit code {exc.returncode})"
-        ) from exc
+    popen_kwargs: dict[str, object] = {
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "text": True,
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        ) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
 
-    pid_text = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", worker_script],
+        **popen_kwargs,
+    )
     try:
-        return int(pid_text)
-    except ValueError as exc:
-        raise click.ClickException(
-            f"bg run returned an invalid PID: {pid_text!r}"
-        ) from exc
+        if proc.stdin is not None:
+            proc.stdin.write(dump_json(payload))
+            proc.stdin.close()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        raise
 
 
 def cleanup_partial_job_state(uid: str, record_dir: Path) -> None:
@@ -1424,6 +1487,8 @@ def cleanup_partial_job_state(uid: str, record_dir: Path) -> None:
         index = load_index()
         remove_index_entry(index, uid)
         save_index(index)
+        if not index.get("records") and not index.get("names"):
+            INDEX_FILE.unlink(missing_ok=True)
     except Exception:
         pass
     shutil.rmtree(record_dir, ignore_errors=True)
@@ -1445,7 +1510,7 @@ def create_job(cmd: str) -> str:
             "cmd": cmd,
             "command_root": root,
             "started_at": started_at,
-            "status": "running",
+            "status": "launching",
             "pid": None,
             "finished_at": None,
             "exit_code": None,
@@ -1453,6 +1518,7 @@ def create_job(cmd: str) -> str:
             "last_event_at": None,
             "matched_pattern": None,
             "matched_stream": None,
+            "record_issue": None,
         }
 
         index = load_index()
@@ -1469,9 +1535,10 @@ def create_job(cmd: str) -> str:
 
         stdout_path = stdout_file_for_uid(uid)
         stderr_path = stderr_file_for_uid(uid)
-        pid = launch_process_for_job(uid, cmd, stdout_path, stderr_path)
-        metadata["pid"] = pid
-        write_meta(uid, metadata)
+        try:
+            spawn_launch_worker_for_job(uid, cmd, stdout_path, stderr_path)
+        except Exception as exc:
+            mark_launch_failed(uid, metadata, f"launch worker failed to start: {exc}")
         return name
     except Exception:
         cleanup_partial_job_state(uid, record_dir)
@@ -1509,7 +1576,14 @@ def remove_job(job_ref: str) -> bool:
 def prune_jobs() -> int:
     jobs = scan_jobs_from_disk(refresh_process=True)
     removed_uids = set(
-        delete_job_records([job for job in jobs if job.get("process_state") != "alive"])
+        delete_job_records(
+            [
+                job
+                for job in jobs
+                if job.get("status") not in IN_PROGRESS_JOB_STATUSES
+                and job.get("process_state") != "alive"
+            ]
+        )
     )
 
     for record_dir in iter_storage_record_dirs():
@@ -1527,7 +1601,7 @@ def prune_jobs() -> int:
             continue
 
         if (
-            snapshot.get("status") == "running"
+            snapshot.get("status") in IN_PROGRESS_JOB_STATUSES
             or snapshot.get("process_state") == "alive"
         ):
             continue
@@ -1561,7 +1635,7 @@ def restart_job(job_ref: str) -> str:
     stdout_path = stdout_file_for_uid(uid)
     stderr_path = stderr_file_for_uid(uid)
 
-    new_pid = launch_process_for_job(uid, cmd, stdout_path, stderr_path)
+    new_pid = launch_process_for_job_inner(uid, cmd, stdout_path, stderr_path)
 
     meta = load_job_meta(uid)
     if meta is None:
@@ -1627,6 +1701,8 @@ def list_cmd(json_output: bool) -> None:
         status = job["status"]
         status_style = {
             "running": "yellow",
+            "launching": "yellow",
+            "starting": "yellow",
             "completed": "green",
             "failed": "red",
             "stale": "magenta",

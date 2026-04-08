@@ -24,7 +24,7 @@ uv tool install agentcli-helpers
 
 ## Usage
 
-`bg` runs commands in your platform shell. `bg run` always returns or fails within 10 seconds, even if shell or launcher behavior is weird. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, launches jobs without a visible console window when PowerShell is available, and expects shell syntax that matches the shell you expect.
+`bg` runs commands in your platform shell. `bg run` returns immediately after creating the handle; a detached worker finishes the launch in the background and may leave the job briefly in `launching` state. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, launches jobs without a visible console window when PowerShell is available, and expects shell syntax that matches the shell you expect.
 
 ### Run a Background Job
 ```bash
@@ -82,7 +82,7 @@ bg rm sleepy-pytest
 bg prune
 ```
 
-Deletes every job that is not currently running, including stale or broken records.
+Deletes every job that is not currently running or launching, including stale or broken records.
 
 ### Restart Job
 ```bash
@@ -111,13 +111,13 @@ bg read $jobName
 
 Jobs keep runtime state in your OS temp directory under `agentcli_bgjobs/`:
 - `index.json` - Friendly-name and UID lookup index
-- `records/<uid>/meta.json` - Canonical job metadata (`uid`, `name`, `cmd`, `pid`, `status`, `started_at`, optional `finished_at`, optional `exit_code`, and live runtime fields)
-- `records/<uid>/meta.json` - Canonical job metadata (`uid`, `name`, `cmd`, `pid`, `status`, `started_at`, optional `finished_at`, optional `exit_code`, and lightweight event fields such as `last_event_type`, `last_event_at`, `matched_pattern`, and `matched_stream`)
+- `records/<uid>/meta.json` - Canonical job metadata (`uid`, `name`, `cmd`, `pid`, `status`, `started_at`, optional `finished_at`, optional `exit_code`, optional `record_issue`, and live runtime fields)
+- `records/<uid>/meta.json` - Canonical job metadata (`uid`, `name`, `cmd`, `pid`, `status`, `started_at`, optional `finished_at`, optional `exit_code`, optional `record_issue`, and lightweight event fields such as `last_event_type`, `last_event_at`, `matched_pattern`, and `matched_stream`)
 - `records/<uid>/stdout.txt` - Standard output
 - `records/<uid>/stderr.txt` - Standard error
 - `records/<uid>/exit_code.txt` - Persisted exit code
 
-Terminal jobs are automatically pruned: keep them for at least 1 hour, cap history at 32 jobs, and evict the oldest terminal jobs first. Running jobs are never evicted automatically.
+Terminal jobs are automatically pruned: keep them for at least 1 hour, cap history at 32 jobs, and evict the oldest terminal jobs first. Running and launching jobs are never evicted automatically.
 
 Windows note:
 - PowerShell syntax works by default when `pwsh` or `powershell` is available
@@ -127,10 +127,13 @@ Windows note:
 ## Status Values
 
 - `running` - Process is still active
+- `launching` - Detached worker is still starting the target process
 - `completed` - Process finished
 - `failed` - Process exited with error
 - `stale` - Record is healthy but PID is gone and no exit code was found
 - `missing` / `corrupt` / `orphaned` - Record problem surfaced by `bg list` / `bg status`
+
+Launch failures keep the handle and mark the record `failed` instead of deleting it.
 
 `bg list` also shows a short update marker when a job has a notable event such as completion, failure, or matched output.
 

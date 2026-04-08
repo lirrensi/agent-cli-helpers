@@ -1,7 +1,7 @@
 # FILE: tests/test_bg_redesign.py
 # PURPOSE: Exercise bg redesign through the real CLI paths with a temp storage root.
-# OWNS: End-to-end regression coverage for naming, collisions, list/status, and broken records.
-# DOCS: agent_chat/plan_bg_name_redesign_2026-03-27.md, agent_chat/plan_bg_wait_notifications_2026-03-28.md, docs/product.md, docs/arch.md, skills/bg-jobs/SKILL.md
+# OWNS: End-to-end regression coverage for naming, collisions, launch timing, list/status, and broken records.
+# DOCS: agent_chat/plan_bg_name_redesign_2026-03-27.md, agent_chat/plan_bg_wait_notifications_2026-03-28.md, agent_chat/plan_bg_immediate_fire_and_forget_2026-04-07.md, docs/product.md, docs/arch.md, skills/bg-jobs/SKILL.md
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 BG_SRC = ROOT / "src"
+sys.path.insert(0, str(BG_SRC))
 
 
 class TestBgRedesign(unittest.TestCase):
@@ -27,6 +28,12 @@ class TestBgRedesign(unittest.TestCase):
         self.temp_root = Path(tempfile.mkdtemp(prefix="bg_redesign_cli_"))
         self.jobs_root = self.temp_root / "agentcli_bgjobs"
         self.jobs_root.mkdir(parents=True, exist_ok=True)
+
+        import agentcli_helpers.bg as bg
+
+        bg.JOBS_DIR = self.jobs_root
+        bg.RECORDS_DIR = self.jobs_root / "records"
+        bg.INDEX_FILE = self.jobs_root / "index.json"
 
     def cli(self, *args: str) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
@@ -56,6 +63,19 @@ class TestBgRedesign(unittest.TestCase):
             env=env,
         )
 
+    def wait_for_status(self, job_name: str, timeout: float = 5.0) -> dict:
+        deadline = time.time() + timeout
+        last_snapshot: dict | None = None
+        while time.time() < deadline:
+            status = self.cli("status", job_name)
+            if status.returncode == 0:
+                last_snapshot = json.loads(status.stdout)
+                if last_snapshot.get("pid") is not None:
+                    return last_snapshot
+            time.sleep(0.1)
+
+        self.fail(f"Timed out waiting for pid metadata for {job_name}: {last_snapshot}")
+
     def write_index(self, records: dict[str, dict], names: dict[str, str]) -> None:
         payload = {"version": 1, "records": records, "names": names}
         (self.jobs_root / "index.json").write_text(
@@ -82,6 +102,9 @@ class TestBgRedesign(unittest.TestCase):
         self.assertRegex(name2, r"^sleepy-python-[a-z0-9]{2}$")
         self.assertNotEqual(name1, name2)
 
+        wait = self.cli("wait", name1)
+        self.assertEqual(wait.returncode, 0, wait.stderr)
+
         read = self.cli("read", name1)
         self.assertEqual(read.returncode, 0, read.stderr)
         self.assertIn("1", read.stdout)
@@ -94,22 +117,26 @@ class TestBgRedesign(unittest.TestCase):
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("Job not found", missing.stderr)
 
-    def test_launch_timeout_cleans_up_partial_state(self) -> None:
-        import click
+    def test_create_job_returns_immediately_and_keeps_launching_record(self) -> None:
         import agentcli_helpers.bg as bg
 
-        cmd = 'python -c "print(1)"'
-        with mock.patch(
-            "agentcli_helpers.bg.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=[sys.executable], timeout=10),
-        ):
-            with self.assertRaises(click.ClickException) as ctx:
-                bg.create_job(cmd)
+        bg.FRIENDLY_WORDS = ["sleepy"]
+        cmd = 'python -c "import time; time.sleep(1)"'
 
-        self.assertIn("timed out after 10 seconds", str(ctx.exception))
-        self.assertFalse((self.jobs_root / "index.json").exists())
-        records_dir = self.jobs_root / "records"
-        self.assertFalse(records_dir.exists() and any(records_dir.iterdir()))
+        with mock.patch("agentcli_helpers.bg.spawn_launch_worker_for_job"):
+            start = time.perf_counter()
+            name = bg.create_job(cmd)
+            elapsed = time.perf_counter() - start
+
+        self.assertEqual(name, "sleepy-python")
+        self.assertLess(elapsed, 0.5)
+
+        status = bg.load_job_snapshot(name)
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status["record_state"], "ok")
+        self.assertIn(status["status"], {"launching", "running"})
+        self.assertTrue((self.jobs_root / "index.json").exists())
 
     def test_create_job_cleans_up_when_initial_write_fails(self) -> None:
         import agentcli_helpers.bg as bg
@@ -139,16 +166,92 @@ class TestBgRedesign(unittest.TestCase):
         records_dir = self.jobs_root / "records"
         self.assertFalse(records_dir.exists() and any(records_dir.iterdir()))
 
-    def test_run_smoke_captures_pid_on_real_launch(self) -> None:
-        run = self.cli("run", "python -V")
+    def test_create_job_keeps_record_when_launch_worker_fails_to_start(self) -> None:
+        import agentcli_helpers.bg as bg
+
+        bg.FRIENDLY_WORDS = ["sleepy"]
+        cmd = 'python -c "print(1)"'
+
+        with mock.patch(
+            "agentcli_helpers.bg.subprocess.Popen", side_effect=OSError("boom")
+        ):
+            name = bg.create_job(cmd)
+
+        self.assertEqual(name, "sleepy-python")
+        snapshot = bg.load_job_snapshot(name)
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot["status"], "failed")
+        self.assertIn("launch worker failed to start", snapshot["record_issue"])
+
+    def test_launch_worker_marks_failed_when_target_launch_fails(self) -> None:
+        import agentcli_helpers.bg as bg
+
+        uid = "launchfail123"
+        name = "sleepy-python"
+        record_dir = self.write_meta(
+            uid,
+            {
+                "uid": uid,
+                "id": uid,
+                "name": name,
+                "cmd": 'python -c "print(1)"',
+                "command_root": "python",
+                "started_at": "2026-03-27T00:00:00",
+                "status": "launching",
+                "pid": None,
+                "finished_at": None,
+                "exit_code": None,
+                "last_event_type": None,
+                "last_event_at": None,
+                "matched_pattern": None,
+                "matched_stream": None,
+                "record_issue": None,
+            },
+        )
+        self.write_index(
+            records={
+                uid: {
+                    "name": name,
+                    "record_relpath": str(
+                        record_dir.relative_to(self.jobs_root).as_posix()
+                    ),
+                    "cmd": 'python -c "print(1)"',
+                    "created_at": "2026-03-27T00:00:00",
+                }
+            },
+            names={name: uid},
+        )
+
+        with mock.patch(
+            "agentcli_helpers.bg.launch_process_for_job_inner",
+            side_effect=RuntimeError("boom"),
+        ):
+            bg.launch_process_for_job_worker(
+                uid,
+                'python -c "print(1)"',
+                record_dir / "stdout.txt",
+                record_dir / "stderr.txt",
+            )
+
+        snapshot = bg.load_job_snapshot(name)
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot["status"], "failed")
+        self.assertIn("boom", snapshot["record_issue"])
+
+    def test_run_smoke_returns_immediately_and_captures_pid_later(self) -> None:
+        start = time.perf_counter()
+        run = self.cli("run", 'python -c "import time; time.sleep(1)"')
+        elapsed = time.perf_counter() - start
+        self.assertLess(elapsed, 1.5)
         self.assertEqual(run.returncode, 0, run.stderr)
 
         job_name = run.stdout.strip()
-        status = self.cli("status", job_name)
-        self.assertEqual(status.returncode, 0, status.stderr)
-        status_json = json.loads(status.stdout)
-        self.assertIsInstance(status_json["pid"], int)
+        status_json = self.wait_for_status(job_name)
         self.assertEqual(status_json["record_state"], "ok")
+        self.assertIsInstance(status_json["pid"], int)
+        self.assertIn(status_json["status"], {"launching", "running", "completed"})
 
     def test_list_and_status_surface_live_and_dead_process_states(self) -> None:
         live_uid = "live123"
@@ -343,7 +446,7 @@ class TestBgRedesign(unittest.TestCase):
         self.assertEqual(listed.returncode, 0, listed.stderr)
         jobs = json.loads(listed.stdout)
         match = next(job for job in jobs if job["name"] == job_name)
-        self.assertIn(match["status"], {"running", "completed"})
+        self.assertIn(match["status"], {"launching", "running", "completed"})
         self.assertEqual(match["matched_pattern"], "needle")
         self.assertEqual(match["matched_stream"], "stderr")
         self.assertIn("matched: needle", match["update_marker"])
