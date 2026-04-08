@@ -24,7 +24,7 @@ uv tool install agentcli-helpers
 
 ## Usage
 
-`bg` runs commands in your platform shell. `bg run` returns immediately after creating the handle; a detached worker finishes the launch in the background and may leave the job briefly in `launching` state. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, launches jobs without a visible console window when PowerShell is available, and expects shell syntax that matches the shell you expect.
+`bg` runs commands in your platform shell. `bg run` returns immediately after creating the handle; a detached worker finishes the launch in the background and jobs appear running unless failure is proven. A short best-effort PID probe updates the record a few seconds later when it can. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, launches jobs without a visible console window when PowerShell is available, and expects shell syntax that matches the shell you expect.
 
 ### Run a Background Job
 ```bash
@@ -82,7 +82,7 @@ bg rm sleepy-pytest
 bg prune
 ```
 
-Deletes every job that is not currently running or launching, including stale or broken records.
+Deletes every job that is not currently running, including stale or broken records.
 
 ### Restart Job
 ```bash
@@ -117,7 +117,7 @@ Jobs keep runtime state in your OS temp directory under `agentcli_bgjobs/`:
 - `records/<uid>/stderr.txt` - Standard error
 - `records/<uid>/exit_code.txt` - Persisted exit code
 
-Terminal jobs are automatically pruned: keep them for at least 1 hour, cap history at 32 jobs, and evict the oldest terminal jobs first. Running and launching jobs are never evicted automatically.
+Terminal jobs are automatically pruned: keep them for at least 1 hour, cap history at 32 jobs, and evict the oldest terminal jobs first. Running jobs are never evicted automatically.
 
 Windows note:
 - PowerShell syntax works by default when `pwsh` or `powershell` is available
@@ -127,7 +127,7 @@ Windows note:
 ## Status Values
 
 - `running` - Process is still active
-- `launching` - Detached worker is still starting the target process
+- `launching` - Internal-only launch state; user-facing status is shown as running until failure is proven
 - `completed` - Process finished
 - `failed` - Process exited with error
 - `stale` - Record is healthy but PID is gone and no exit code was found

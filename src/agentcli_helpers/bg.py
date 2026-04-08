@@ -119,6 +119,7 @@ INDEX_VERSION = 1
 TERMINAL_JOB_RETENTION_SECONDS = 60 * 60
 TERMINAL_JOB_CAP = 32
 BG_LAUNCH_TIMEOUT_SECONDS = 10
+LAUNCH_PID_PROBE_DELAY_SECONDS = 5
 IN_PROGRESS_JOB_STATUSES = {"running", "launching", "starting"}
 LAUNCHING_JOB_STATUSES = {"launching", "starting"}
 
@@ -707,16 +708,16 @@ def derive_status(
 ) -> str:
     if record_state != "ok":
         return record_state
-    if record_status in LAUNCHING_JOB_STATUSES:
-        return record_status
     if record_status in {"completed", "failed"}:
         return record_status
-    if process_state == "alive":
-        return "running"
     if exit_code is not None:
         return "completed" if exit_code == 0 else "failed"
     if finished_at:
         return "completed"
+    if record_status in LAUNCHING_JOB_STATUSES:
+        return "running"
+    if process_state == "alive":
+        return "running"
     if process_state in {"dead", "zombie"}:
         return "stale"
     if process_state == "missing_pid":
@@ -1395,6 +1396,16 @@ def mark_launch_failed(uid: str, meta: dict, issue: str) -> dict:
     return updated
 
 
+def mark_launch_worker_pid(uid: str, meta: dict, worker_pid: int) -> dict:
+    updated = dict(meta)
+    updated["launch_worker_pid"] = worker_pid
+    try:
+        write_meta(uid, updated)
+    except Exception:
+        pass
+    return updated
+
+
 def mark_launch_running(uid: str, meta: dict, pid: int) -> dict:
     updated = dict(meta)
     updated["pid"] = pid
@@ -1407,6 +1418,150 @@ def mark_launch_running(uid: str, meta: dict, pid: int) -> dict:
     except Exception:
         pass
     return updated
+
+
+def mark_launch_issue(uid: str, meta: dict, issue: str) -> dict:
+    updated = dict(meta)
+    updated["record_issue"] = issue
+    try:
+        write_meta(uid, updated)
+    except Exception:
+        pass
+    return updated
+
+
+def find_pid_from_launch_worker(worker_pid: int | None) -> int | None:
+    if not isinstance(worker_pid, int) or worker_pid <= 0 or not HAS_PSUTIL:
+        return None
+
+    try:
+        worker = psutil.Process(worker_pid)
+        with worker.oneshot():
+            if not worker.is_running():
+                return None
+            children = worker.children(recursive=True)
+
+        alive_children = []
+        for child in children:
+            try:
+                with child.oneshot():
+                    if not child.is_running():
+                        continue
+                    if child.status() == getattr(psutil, "STATUS_ZOMBIE", None):
+                        continue
+                    alive_children.append(child)
+            except (getattr(psutil, "Error", Exception), OSError):
+                continue
+
+        if not alive_children:
+            return None
+
+        alive_children.sort(
+            key=lambda proc: (
+                getattr(proc, "create_time", lambda: 0.0)(),
+                proc.pid,
+            )
+        )
+        return alive_children[0].pid
+    except (getattr(psutil, "NoSuchProcess", Exception), ProcessLookupError):
+        return None
+    except (
+        getattr(psutil, "AccessDenied", Exception),
+        getattr(psutil, "Error", Exception),
+        OSError,
+    ):
+        return None
+
+
+def probe_launch_pid_for_job(
+    uid: str, *, delay_seconds: float = LAUNCH_PID_PROBE_DELAY_SECONDS
+) -> None:
+    if delay_seconds > 0:
+        time.sleep(delay_seconds)
+
+    deadline = time.time() + 1.5
+    while time.time() <= deadline:
+        meta = load_job_meta(uid)
+        if meta is None:
+            return
+
+        if (
+            meta.get("status") in {"completed", "failed"}
+            or meta.get("exit_code") is not None
+        ):
+            return
+
+        pid = meta.get("pid")
+        if isinstance(pid, int) and inspect_process(pid).get("is_running"):
+            return
+
+        candidate = find_pid_from_launch_worker(meta.get("launch_worker_pid"))
+        if candidate is not None:
+            updated = dict(meta)
+            updated["pid"] = candidate
+            if updated.get("status") in LAUNCHING_JOB_STATUSES:
+                updated["status"] = "running"
+            updated.pop("record_issue", None)
+            try:
+                write_meta(uid, updated)
+            except Exception:
+                pass
+            return
+
+        time.sleep(0.5)
+
+    meta = load_job_meta(uid)
+    if meta is not None and meta.get("status") not in {"completed", "failed"}:
+        mark_launch_issue(
+            uid,
+            meta,
+            "pid probe could not confirm the launched process",
+        )
+
+
+def spawn_launch_pid_probe_for_job(
+    uid: str, delay_seconds: float = LAUNCH_PID_PROBE_DELAY_SECONDS
+) -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    probe_script = "\n".join(
+        [
+            "import json",
+            "import sys",
+            f"sys.path.insert(0, {str(package_root)!r})",
+            "from agentcli_helpers.bg import probe_launch_pid_for_job",
+            "payload = json.loads(sys.stdin.read() or '{}')",
+            "probe_launch_pid_for_job(payload['uid'], delay_seconds=payload.get('delay_seconds', 5))",
+        ]
+    )
+    payload = {"uid": uid, "delay_seconds": delay_seconds}
+
+    popen_kwargs: dict[str, object] = {
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "text": True,
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        ) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", probe_script],
+        **popen_kwargs,
+    )
+    try:
+        if proc.stdin is not None:
+            proc.stdin.write(dump_json(payload))
+            proc.stdin.close()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        raise
 
 
 def launch_process_for_job_worker(
@@ -1428,7 +1583,7 @@ def launch_process_for_job_worker(
 
 def spawn_launch_worker_for_job(
     uid: str, cmd: str, stdout_path: Path, stderr_path: Path
-) -> None:
+) -> int:
     package_root = Path(__file__).resolve().parents[1]
     worker_script = "\n".join(
         [
@@ -1481,6 +1636,8 @@ def spawn_launch_worker_for_job(
             pass
         raise
 
+    return proc.pid
+
 
 def cleanup_partial_job_state(uid: str, record_dir: Path) -> None:
     try:
@@ -1512,6 +1669,7 @@ def create_job(cmd: str) -> str:
             "started_at": started_at,
             "status": "launching",
             "pid": None,
+            "launch_worker_pid": None,
             "finished_at": None,
             "exit_code": None,
             "last_event_type": None,
@@ -1536,9 +1694,16 @@ def create_job(cmd: str) -> str:
         stdout_path = stdout_file_for_uid(uid)
         stderr_path = stderr_file_for_uid(uid)
         try:
-            spawn_launch_worker_for_job(uid, cmd, stdout_path, stderr_path)
+            worker_pid = spawn_launch_worker_for_job(uid, cmd, stdout_path, stderr_path)
         except Exception as exc:
             mark_launch_failed(uid, metadata, f"launch worker failed to start: {exc}")
+            return name
+
+        metadata = mark_launch_worker_pid(uid, metadata, worker_pid)
+        try:
+            spawn_launch_pid_probe_for_job(uid)
+        except Exception as exc:
+            mark_launch_issue(uid, metadata, f"pid probe failed to start: {exc}")
         return name
     except Exception:
         cleanup_partial_job_state(uid, record_dir)

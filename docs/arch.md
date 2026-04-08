@@ -109,7 +109,7 @@ bg = "agentcli_helpers.bg:main"
 - `bg read JOB_REF` — Read stdout
 - `bg logs JOB_REF` — Read stdout + stderr
 - `bg rm JOB_REF` — Remove job
-- `bg prune` — Remove every job that is not currently running or launching
+- `bg prune` — Remove every job that is not currently running
 
 `bg run` returns immediately after creating the handle. A detached worker process performs launch confirmation and updates the job record later, so strange shell/launcher behavior cannot block the CLI.
 
@@ -130,7 +130,7 @@ bg = "agentcli_helpers.bg:main"
 
 `meta.json` is the canonical job record and MUST preserve the base fields `uid`, `name`, `cmd`, `started_at`, `status`, and `pid`.
 
-The launch lifecycle MAY temporarily use `launching` or `starting` while the detached worker is still starting the target process.
+The launch lifecycle MAY temporarily use `launching` or `starting` internally while the detached worker is still starting the target process, but user-facing status should normalize those states to `running` unless failure is proven.
 
 The record MUST also support terminal lifecycle fields:
 - `finished_at` — ISO timestamp when the job exits
@@ -161,7 +161,7 @@ create_job(cmd) -> friendly_name
     |
     +-- mkdir(records/{uid})
     |
-    +-- write(meta.json, status="launching")
+    +-- write(meta.json, status="launching", launch_worker_pid=best-effort)
     +-- upsert index.json (name -> uid, uid -> record path)
     |
     +-- spawn detached worker process
@@ -239,14 +239,14 @@ list_jobs() -> list[dict]
 
 Background job storage is self-pruning.
 
-- Running and launching jobs are never auto-removed.
+- Running jobs are never auto-removed.
 - Terminal jobs are kept for 1 hour by default.
 - If more than 32 terminal jobs exist, the oldest terminal jobs are removed first even if they are younger than 1 hour.
 - `scan_jobs_from_disk()` and `load_job_snapshot()` perform cleanup opportunistically during normal CLI calls.
 
 `bg status` MUST return the same enriched metadata model for a single job, including explicit `record_state` and `process_state` fields.
 
-`bg prune` is an aggressive cleanup command. It MUST delete every job whose live process is not active and whose record is not still launching, including stale and broken records, while leaving running/launching jobs untouched.
+`bg prune` is an aggressive cleanup command. It MUST delete every job whose live process is not active and whose record is not still launching, including stale and broken records, while leaving running jobs untouched.
 
 ### Wait Behavior
 

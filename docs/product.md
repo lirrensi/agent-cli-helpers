@@ -65,7 +65,7 @@ Send a desktop notification.
 
 ## Tool: bg — Background Jobs
 
-Run and track short-lived background jobs with friendly names, stable UIDs, and separate record/process state.
+Run and track background jobs with friendly names, stable UIDs, and separate record/process state.
 
 ### Commands
 
@@ -99,7 +99,7 @@ List all background jobs.
 
 **Output (human-readable):**
 - Table with columns: Name, UID, Record, Process, Status, Update, PID, Started, Elapsed, Command
-- Status colors: yellow=running/launching, green=completed, red=failed
+- Status colors: yellow=running, green=completed, red=failed
 
 **Output (JSON):**
 ```json
@@ -132,7 +132,7 @@ List all background jobs.
 - Preserves record problems separately from process state
 - Refreshes live process details before rendering list output
 - Live resource metrics are best-effort and MAY be omitted on platforms where they cannot be read reliably
-- Terminal jobs are pruned opportunistically: keep them for at least 1 hour, cap history at 32 jobs, and evict the oldest terminal records first; running and launching jobs are never removed automatically
+- Terminal jobs are pruned opportunistically: keep them for at least 1 hour, cap history at 32 jobs, and evict the oldest terminal records first; running jobs are never removed automatically
 
 #### `bg wait JOB_REF`
 
@@ -203,7 +203,7 @@ Remove a job record.
 Remove every job that is not currently running.
 
 **Behavior:**
-- Keeps all running and launching jobs intact
+- Keeps all running jobs intact
 - Deletes completed, failed, stale, missing, corrupt, and orphaned jobs
 - Acts as an aggressive privacy cleanup / storage reset for terminal state
 
@@ -224,7 +224,7 @@ Terminal job records are self-pruning under the retention policy above.
 ### Status Values
 
 - `running` — Process is active
-- `launching` — Handle exists but the detached worker has not finished starting the target yet
+- `launching` — Internal only; user-facing status is shown as running until failure is proven
 - `completed` — Process finished successfully
 - `failed` — Process exited with non-zero code
 - `stale` — Record is healthy but PID is gone and no exit code was found
@@ -238,6 +238,7 @@ Terminal job records are self-pruning under the retention policy above.
 - Windows: uses hidden `Start-Process` launches when PowerShell is available, else `CREATE_NEW_PROCESS_GROUP` + `CREATE_NO_WINDOW`
 - Unix: uses `start_new_session` for full detachment
 - Launch happens in a detached worker; launch failures preserve the job record and mark it failed instead of deleting the handle
+- A delayed best-effort probe retries PID discovery for a few seconds and updates the record when possible
 
 ---
 

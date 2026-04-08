@@ -117,7 +117,9 @@ class TestBgRedesign(unittest.TestCase):
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("Job not found", missing.stderr)
 
-    def test_create_job_returns_immediately_and_keeps_launching_record(self) -> None:
+    def test_create_job_returns_immediately_and_treats_launching_as_running(
+        self,
+    ) -> None:
         import agentcli_helpers.bg as bg
 
         bg.FRIENDLY_WORDS = ["sleepy"]
@@ -135,7 +137,7 @@ class TestBgRedesign(unittest.TestCase):
         self.assertIsNotNone(status)
         assert status is not None
         self.assertEqual(status["record_state"], "ok")
-        self.assertIn(status["status"], {"launching", "running"})
+        self.assertEqual(status["status"], "running")
         self.assertTrue((self.jobs_root / "index.json").exists())
 
     def test_create_job_cleans_up_when_initial_write_fails(self) -> None:
@@ -251,7 +253,123 @@ class TestBgRedesign(unittest.TestCase):
         status_json = self.wait_for_status(job_name)
         self.assertEqual(status_json["record_state"], "ok")
         self.assertIsInstance(status_json["pid"], int)
-        self.assertIn(status_json["status"], {"launching", "running", "completed"})
+        self.assertIn(status_json["status"], {"running", "completed"})
+
+    def test_launch_pid_probe_updates_pid_best_effort(self) -> None:
+        import agentcli_helpers.bg as bg
+
+        uid = "probe123"
+        name = "sleepy-probe"
+        record_dir = self.write_meta(
+            uid,
+            {
+                "uid": uid,
+                "id": uid,
+                "name": name,
+                "cmd": 'python -c "print(1)"',
+                "command_root": "python",
+                "started_at": "2026-03-27T00:00:00",
+                "status": "launching",
+                "pid": None,
+                "launch_worker_pid": 12345,
+                "finished_at": None,
+                "exit_code": None,
+                "last_event_type": None,
+                "last_event_at": None,
+                "matched_pattern": None,
+                "matched_stream": None,
+                "record_issue": None,
+            },
+        )
+        self.write_index(
+            records={
+                uid: {
+                    "name": name,
+                    "record_relpath": str(
+                        record_dir.relative_to(self.jobs_root).as_posix()
+                    ),
+                    "cmd": 'python -c "print(1)"',
+                    "created_at": "2026-03-27T00:00:00",
+                }
+            },
+            names={name: uid},
+        )
+
+        with mock.patch(
+            "agentcli_helpers.bg.find_pid_from_launch_worker", return_value=4321
+        ):
+            bg.probe_launch_pid_for_job(uid, delay_seconds=0)
+
+        meta = bg.load_job_meta(uid)
+        self.assertIsNotNone(meta)
+        assert meta is not None
+        self.assertEqual(meta["pid"], 4321)
+        self.assertTrue((record_dir / "meta.json").exists())
+
+        with mock.patch(
+            "agentcli_helpers.bg.inspect_process",
+            return_value={"process_state": "alive", "is_running": True},
+        ):
+            snapshot = bg.build_view_from_meta(
+                meta, record_state="ok", refresh_process=False
+            )
+        self.assertEqual(snapshot["status"], "running")
+        self.assertIsNone(snapshot["record_issue"])
+
+    def test_launch_pid_probe_preserves_record_when_pid_cannot_be_found(self) -> None:
+        import agentcli_helpers.bg as bg
+
+        uid = "probe-miss123"
+        name = "sleepy-probe-miss"
+        record_dir = self.write_meta(
+            uid,
+            {
+                "uid": uid,
+                "id": uid,
+                "name": name,
+                "cmd": 'python -c "print(1)"',
+                "command_root": "python",
+                "started_at": "2026-03-27T00:00:00",
+                "status": "launching",
+                "pid": None,
+                "launch_worker_pid": 12345,
+                "finished_at": None,
+                "exit_code": None,
+                "last_event_type": None,
+                "last_event_at": None,
+                "matched_pattern": None,
+                "matched_stream": None,
+                "record_issue": None,
+            },
+        )
+        self.write_index(
+            records={
+                uid: {
+                    "name": name,
+                    "record_relpath": str(
+                        record_dir.relative_to(self.jobs_root).as_posix()
+                    ),
+                    "cmd": 'python -c "print(1)"',
+                    "created_at": "2026-03-27T00:00:00",
+                }
+            },
+            names={name: uid},
+        )
+
+        with mock.patch(
+            "agentcli_helpers.bg.find_pid_from_launch_worker", return_value=None
+        ):
+            bg.probe_launch_pid_for_job(uid, delay_seconds=0)
+
+        meta = bg.load_job_meta(uid)
+        self.assertIsNotNone(meta)
+        assert meta is not None
+        snapshot = bg.build_view_from_meta(
+            meta, record_state="ok", refresh_process=False
+        )
+        self.assertEqual(snapshot["status"], "running")
+        self.assertIn("pid probe could not confirm", snapshot["record_issue"])
+        self.assertTrue((self.jobs_root / "records" / uid).exists())
 
     def test_list_and_status_surface_live_and_dead_process_states(self) -> None:
         live_uid = "live123"
@@ -446,7 +564,7 @@ class TestBgRedesign(unittest.TestCase):
         self.assertEqual(listed.returncode, 0, listed.stderr)
         jobs = json.loads(listed.stdout)
         match = next(job for job in jobs if job["name"] == job_name)
-        self.assertIn(match["status"], {"launching", "running", "completed"})
+        self.assertIn(match["status"], {"running", "completed"})
         self.assertEqual(match["matched_pattern"], "needle")
         self.assertEqual(match["matched_stream"], "stderr")
         self.assertIn("matched: needle", match["update_marker"])
