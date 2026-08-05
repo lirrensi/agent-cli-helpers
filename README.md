@@ -158,6 +158,8 @@ bg prune                               # nuke all terminal jobs
 
 Friendly names, stable UIDs, separate record/process state, auto-prunes terminal records (keeps running jobs forever, caps terminal history at 32).
 
+> **Name collision:** `bg` is a shell builtin on bash/zsh/fish (POSIX job control), which shadows the CLI. On those shells use **`bgj`** (same command, collision-free) or `alias bg='env bg'`. On PowerShell/cmd plain `bg` works.
+
 ### 📸 screenshot — Screen capture
 
 ```bash

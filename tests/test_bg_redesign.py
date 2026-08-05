@@ -441,7 +441,9 @@ class TestBgRedesign(unittest.TestCase):
         self.assertEqual(dead_json["process_state"], "dead")
         self.assertEqual(dead_json["status"], "stale")
 
-        listed = self.cli("list", "--json")
+        # --all is required: default `bg list` shows running jobs only,
+        # and this fixture intentionally mixes a live and a stale job.
+        listed = self.cli("list", "--all", "--json")
         self.assertEqual(listed.returncode, 0, listed.stderr)
         jobs = json.loads(listed.stdout)
         self.assertTrue(
@@ -505,7 +507,9 @@ class TestBgRedesign(unittest.TestCase):
         corrupt_dir.mkdir(parents=True, exist_ok=True)
         (corrupt_dir / "meta.json").write_text("{broken", encoding="utf-8")
 
-        list_result = self.cli("list", "--json")
+        # --all is required: default `bg list` shows running jobs only,
+        # and this fixture intentionally includes broken records.
+        list_result = self.cli("list", "--all", "--json")
         self.assertEqual(list_result.returncode, 0, list_result.stderr)
         listed = json.loads(list_result.stdout)
         states = {job["record_state"] for job in listed}
@@ -560,7 +564,7 @@ class TestBgRedesign(unittest.TestCase):
         self.assertEqual(wait.returncode, 0, wait.stderr)
         self.assertGreaterEqual(elapsed, 0.15)
 
-        listed = self.cli("list", "--json")
+        listed = self.cli("list", "--all", "--json")
         self.assertEqual(listed.returncode, 0, listed.stderr)
         jobs = json.loads(listed.stdout)
         match = next(job for job in jobs if job["name"] == job_name)
@@ -704,7 +708,9 @@ class TestBgRedesign(unittest.TestCase):
         status = self.cli("status", "sleepy-running")
         self.assertEqual(status.returncode, 0, status.stderr)
 
-        listed = self.cli("list", "--json")
+        # --all is required: default `bg list` shows running jobs only,
+        # and this fixture counts terminal jobs after the cap eviction.
+        listed = self.cli("list", "--all", "--json")
         self.assertEqual(listed.returncode, 0, listed.stderr)
         jobs = json.loads(listed.stdout)
         uids = {job["uid"] for job in jobs}

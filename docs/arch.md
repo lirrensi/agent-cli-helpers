@@ -113,16 +113,19 @@ send_notification(title, body) -> bool
 ### Entry Point
 ```python
 bg = "agent_sommelier.bg:main"
+bgj = "agent_sommelier.bg:main"   # collision-free alias for POSIX shells
 ```
 
+The CLI exposes both `bg` and `bgj` for the same command. `bg` is shadowed by the POSIX shell builtin of the same name on bash/zsh/fish (builtins resolve before PATH), so those shells must use `bgj` (or `alias bg='env bg'`); PowerShell/cmd have no such builtin and can use `bg` directly.
+
 ### Commands
-- `bg run "CMD"` — Create background job and return a friendly name
-- `bg list` — List all jobs
+- `bg run "CMD"` — Create background job and return a friendly name. `--cwd DIR` sets the job working directory (validated; the process really runs there); the directory is recorded as `cwd` and reused by `bg restart`
+- `bg list` — List running jobs only (statuses `running`/`launching`/`starting`). `--all` includes settled jobs, rendered as a Running section plus a dim Settled section; table output pages at 20 rows with `--page N` (footer `Showing X-Y of Z (page N/N)` + `use --page N` hint). JSON output is never paginated but follows the same default running-only filter
 - `bg status JOB_REF` — Get job metadata by friendly name or UID
 - `bg wait JOB_REF` — Wait for terminal state. `--timeout N` (float seconds, `0` disables) overrides the default 120s non-TTY cap.
 - `bg wait JOB_REF --match PATTERN` — Wait for output match in stdout/stderr. `--timeout N` available.
 - `bg wait-all` — Wait for all known jobs. `--timeout N` available.
-- `bg read JOB_REF` — Read stdout
+- `bg read JOB_REF` — Read stdout. `--tail` reads only new output from the persisted `last_read_offset` and advances the offset
 - `bg logs JOB_REF` — Read stdout + stderr
 - `bg rm JOB_REF` — Remove job
 - `bg prune` — Remove every job that is not currently running
@@ -136,7 +139,7 @@ bg = "agent_sommelier.bg:main"
 ├── index.json
 └── records/
     └── {uid}/
-        ├── meta.json    # {"uid", "name", "cmd", "started_at", "status", "pid", "finished_at", "exit_code", "record_issue", "last_event_type", ...}
+        ├── meta.json    # {"uid", "name", "cmd", "cwd", "started_at", "status", "pid", "finished_at", "exit_code", "record_issue", "last_event_type", "last_read_offset", ...}
         ├── stdout.txt   # Captured stdout
         ├── stderr.txt   # Captured stderr
         └── exit_code.txt # Persisted exit code
@@ -145,6 +148,8 @@ bg = "agent_sommelier.bg:main"
 ### Runtime Metadata
 
 `meta.json` is the canonical job record and MUST preserve the base fields `uid`, `name`, `cmd`, `started_at`, `status`, and `pid`.
+
+New records also store `cwd` — the working directory captured at `bg run` time (validated directory; `null`/absent for legacy records) — and `last_read_offset` — the persisted byte offset used by `bg read --tail` to print only new output.
 
 The launch lifecycle MAY temporarily use `launching` or `starting` internally while the detached worker is still starting the target process, but user-facing status should normalize those states to `running` unless failure is proven.
 
@@ -170,25 +175,26 @@ Runtime inspection fields are best-effort snapshots, not guaranteed historical t
 ### Job Lifecycle
 
 ```
-create_job(cmd) -> friendly_name
+create_job(cmd, cwd) -> friendly_name
     |
+    +-- validate cwd (must be an existing directory)
     +-- generate_uid() --> stable internal UID
     +-- friendly_name_for(cmd) --> <word>-<commandroot>
     |
     +-- mkdir(records/{uid})
     |
-    +-- write(meta.json, status="launching", launch_worker_pid=best-effort)
+    +-- write(meta.json, status="launching", cwd=..., launch_worker_pid=best-effort)
     +-- upsert index.json (name -> uid, uid -> record path)
     |
     +-- spawn detached worker process
     |
     +-- Windows:
     |       |
-    |       +-- build_windows_wrapped_command(uid, cmd)
+    |       +-- build_windows_wrapped_command(uid, cmd, cwd)
     |       |       |
     |       |       +-- prefer pwsh -> powershell -> cmd.exe
-    |       |       +-- write runner.ps1 or runner.cmd
-    |       |       +-- if PowerShell exists, write launcher.ps1
+    |       |       +-- write runner.ps1 (Set-Location cwd) or runner.cmd (cd /d cwd)
+    |       |       +-- if PowerShell exists, write launcher.ps1 (Start-Process -WorkingDirectory)
     |
     +-- Windows with PowerShell:
     |       |
@@ -197,14 +203,14 @@ create_job(cmd) -> friendly_name
     |
     +-- Windows fallback without PowerShell:
     |       |
-    |       +-- subprocess.Popen(wrapped_cmd, ...)
+    |       +-- subprocess.Popen(wrapped_cmd, cwd=..., ...)
     |       +-- CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
     |       |
     +-- Unix:
     |       |
     |       +-- build_wrapped_command(uid, cmd)
     |       +-- shell wrapper writes exit_code.txt
-    |       +-- subprocess.Popen(wrapped_cmd, ...)
+    |       +-- subprocess.Popen(wrapped_cmd, cwd=..., ...)
     |       +-- start_new_session
     |
     +-- fallback path updates meta.json with proc.pid
@@ -249,7 +255,9 @@ list_jobs() -> list[dict]
 
 `bg list` is an operational view, not just a metadata dump. It SHOULD surface live process information such as PID, elapsed runtime, and memory usage in addition to stored job metadata.
 
-`bg list` SHOULD also surface a compact update marker when a job has a notable event such as completion, failure, or matched output.
+The default `bg list` view shows only running jobs (statuses `running`/`launching`/`starting`); `--all` includes settled jobs. Table output separates running from settled jobs into two sections and pages at 20 rows (`--page N`, with a `Showing X-Y of Z (page N/N)` footer and a `use --page N` hint when more pages exist). JSON output is never paginated but the same running-only filter applies to the default view.
+
+`bg list` SHOULD also surface a compact update marker when a job has a notable event such as completion, failure, or matched output, and a Dir column with the recorded working directory (truncated ~40 chars; `-` for legacy records).
 
 ### Retention / Cleanup
 

@@ -2,7 +2,7 @@
 # PURPOSE: Manage detached background jobs with friendly names, stable UIDs, async launch workers, state refresh, and lightweight update events.
 # OWNS: bg CLI storage, naming, worker launch, process inspection, output capture, wait loops, and record cleanup.
 # EXPORTS: main (CLI entry point), create_job (launch helper), list_jobs (enumeration), load_job_snapshot (lookup), launch helpers, wait helpers
-# DOCS: docs/product.md, docs/arch.md, skills/bg-jobs/SKILL.md, .agents/reports/plan_bg_name_redesign_2026-03-27.md, .agents/reports/plan_bg_wait_notifications_2026-03-28.md, .agents/reports/plan_bg_immediate_fire_and_forget_2026-04-07.md, .agents/reports/plan_bg_wait_agent_protection_2026-06-24.md
+# DOCS: docs/product.md, docs/arch.md, skills/bg-jobs/SKILL.md, .agents/reports/plan_bg_name_redesign_2026-03-27.md, .agents/reports/plan_bg_wait_notifications_2026-03-28.md, .agents/reports/plan_bg_immediate_fire_and_forget_2026-04-07.md, .agents/reports/plan_bg_wait_agent_protection_2026-06-24.md, .agents/reports/plan_bg-lifecycle-2026-08-06.md
 
 """Background job manager CLI."""
 
@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import signal
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -146,7 +146,9 @@ BG_LAUNCH_TIMEOUT_SECONDS = 10
 LAUNCH_PID_PROBE_DELAY_SECONDS = 5
 BG_WAIT_AGENT_TIMEOUT_SECONDS = 120
 IN_PROGRESS_JOB_STATUSES = {"running", "launching", "starting"}
+RUNNING_STATUSES = {"running", "launching", "starting"}
 LAUNCHING_JOB_STATUSES = {"launching", "starting"}
+LIST_PAGE_SIZE = 20
 
 FRIENDLY_WORDS = [
     "amber",
@@ -680,50 +682,51 @@ def write_meta(uid: str, meta: dict) -> dict:
     return meta
 
 
-def build_windows_runner_uid(uid: str, cmd: str) -> Path:
+def build_windows_runner_uid(uid: str, cmd: str, cwd: str | None = None) -> Path:
     exit_code_path = str(exit_code_file_for_uid(uid)).replace("'", "''")
     runner_file = runner_file_for_uid(uid, "ps1")
-    runner_file.write_text(
-        "\n".join(
-            [
-                "$ErrorActionPreference = 'Continue'",
-                "$bgExit = 0",
-                "try {",
-                "    & {",
-                *[f"        {line}" for line in cmd.splitlines() or [cmd]],
-                "    }",
-                "    if ($LASTEXITCODE -is [int]) {",
-                "        $bgExit = $LASTEXITCODE",
-                "    } elseif (-not $?) {",
-                "        $bgExit = 1",
-                "    }",
-                "} catch {",
-                "    $_ | Out-String | Write-Error",
-                "    $bgExit = 1",
-                "}",
-                f"Set-Content -LiteralPath '{exit_code_path}' -Value $bgExit -NoNewline",
-                "exit $bgExit",
-            ]
-        ),
-        encoding="utf-8",
+    lines: list[str] = []
+    if cwd:
+        lines.append(f"Set-Location -LiteralPath {windows_ps_literal(cwd)}")
+    lines.extend(
+        [
+            "$ErrorActionPreference = 'Continue'",
+            "$bgExit = 0",
+            "try {",
+            "    & {",
+            *[f"        {line}" for line in cmd.splitlines() or [cmd]],
+            "    }",
+            "    if ($LASTEXITCODE -is [int]) {",
+            "        $bgExit = $LASTEXITCODE",
+            "    } elseif (-not $?) {",
+            "        $bgExit = 1",
+            "    }",
+            "} catch {",
+            "    $_ | Out-String | Write-Error",
+            "    $bgExit = 1",
+            "}",
+            f"Set-Content -LiteralPath '{exit_code_path}' -Value $bgExit -NoNewline",
+            "exit $bgExit",
+        ]
     )
+    runner_file.write_text("\n".join(lines), encoding="utf-8")
     return runner_file
 
 
-def build_windows_cmd_runner(uid: str, cmd: str) -> Path:
+def build_windows_cmd_runner(uid: str, cmd: str, cwd: str | None = None) -> Path:
     runner_file = runner_file_for_uid(uid, "cmd")
-    runner_file.write_text(
-        "\n".join(
-            [
-                "@echo off",
-                cmd,
-                "set bg_exit=%errorlevel%",
-                f'> "{exit_code_file_for_uid(uid)}" echo %bg_exit%',
-                "exit /b %bg_exit%",
-            ]
-        ),
-        encoding="utf-8",
+    lines = ["@echo off"]
+    if cwd:
+        lines.append(f'cd /d "{cwd}"')
+    lines.extend(
+        [
+            cmd,
+            "set bg_exit=%errorlevel%",
+            f'> "{exit_code_file_for_uid(uid)}" echo %bg_exit%',
+            "exit /b %bg_exit%",
+        ]
     )
+    runner_file.write_text("\n".join(lines), encoding="utf-8")
     return runner_file
 
 
@@ -739,10 +742,12 @@ def select_windows_shell() -> str | None:
     return None
 
 
-def build_windows_wrapped_command(uid: str, cmd: str) -> tuple[list[str], str | None]:
+def build_windows_wrapped_command(
+    uid: str, cmd: str, cwd: str | None = None
+) -> tuple[list[str], str | None]:
     shell_path = select_windows_shell()
     if shell_path:
-        runner_file = build_windows_runner_uid(uid, cmd)
+        runner_file = build_windows_runner_uid(uid, cmd, cwd)
         return (
             [
                 shell_path,
@@ -757,7 +762,7 @@ def build_windows_wrapped_command(uid: str, cmd: str) -> tuple[list[str], str | 
             shell_path,
         )
 
-    runner_file = build_windows_cmd_runner(uid, cmd)
+    runner_file = build_windows_cmd_runner(uid, cmd, cwd)
     return ["cmd.exe", "/d", "/c", str(runner_file)], None
 
 
@@ -776,9 +781,13 @@ def write_windows_start_launcher(
     wrapped_cmd: list[str],
     stdout_path: Path,
     stderr_path: Path,
+    cwd: str | None = None,
 ) -> Path:
     launcher_file = runner_file_for_uid(uid, "launcher.ps1")
     arg_lines = [f"    {windows_ps_literal(arg)}" for arg in wrapped_cmd[1:]]
+    working_dir_arg = (
+        f" -WorkingDirectory {windows_ps_literal(cwd)}" if cwd else ""
+    )
     launcher_file.write_text(
         "\n".join(
             [
@@ -790,7 +799,7 @@ def write_windows_start_launcher(
                     f"-ArgumentList $argList -WindowStyle Hidden "
                     f"-RedirectStandardOutput {windows_ps_literal(str(stdout_path))} "
                     f"-RedirectStandardError {windows_ps_literal(str(stderr_path))} "
-                    "-PassThru"
+                    f"{working_dir_arg}-PassThru"
                 ),
                 "$proc.Id",
             ]
@@ -857,6 +866,7 @@ def record_view(
     process_state: str,
     finished_at: str | None = None,
     exit_code: int | None = None,
+    cwd: str | None = None,
     last_event_type: str | None = None,
     last_event_at: str | None = None,
     matched_pattern: str | None = None,
@@ -877,6 +887,7 @@ def record_view(
         "id": uid,
         "name": name,
         "cmd": cmd,
+        "cwd": cwd,
         "started_at": started_at,
         "finished_at": finished_at,
         "exit_code": exit_code,
@@ -997,7 +1008,6 @@ def build_view_from_meta(
 ) -> dict:
     uid = str(meta.get("uid") or meta.get("id") or "")
     name = str(meta.get("name") or uid)
-    started_at = meta.get("started_at")
     pid = meta.get("pid")
 
     if process_state is None:
@@ -1025,6 +1035,7 @@ def build_view_from_meta(
         uid=uid,
         name=name,
         cmd=working_meta.get("cmd"),
+        cwd=working_meta.get("cwd"),
         started_at=working_meta.get("started_at"),
         pid=working_meta.get("pid"),
         record_state=record_state,
@@ -1576,14 +1587,18 @@ def cleanup_terminal_jobs(jobs: list[dict]) -> set[str]:
 
 
 def launch_process_for_job_inner(
-    uid: str, cmd: str, stdout_path: Path, stderr_path: Path
+    uid: str,
+    cmd: str,
+    stdout_path: Path,
+    stderr_path: Path,
+    cwd: str | None = None,
 ) -> int:
     """Launch a process for a job and return its PID."""
     if sys.platform == "win32":
-        wrapped_cmd, launcher_shell = build_windows_wrapped_command(uid, cmd)
+        wrapped_cmd, launcher_shell = build_windows_wrapped_command(uid, cmd, cwd)
         if launcher_shell:
             launcher_file = write_windows_start_launcher(
-                uid, wrapped_cmd, stdout_path, stderr_path
+                uid, wrapped_cmd, stdout_path, stderr_path, cwd
             )
             result = subprocess.run(
                 [
@@ -1610,6 +1625,7 @@ def launch_process_for_job_inner(
             proc = subprocess.Popen(
                 wrapped_cmd,
                 shell=False,
+                cwd=cwd,
                 stdout=stdout_file,
                 stderr=stderr_file,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
@@ -1624,6 +1640,7 @@ def launch_process_for_job_inner(
             proc = subprocess.Popen(
                 wrapped_cmd,
                 shell=use_shell,
+                cwd=cwd,
                 stdout=stdout_file,
                 stderr=stderr_file,
                 start_new_session=True,
@@ -1821,7 +1838,7 @@ def spawn_launch_pid_probe_for_job(
 
 
 def launch_process_for_job_worker(
-    uid: str, cmd: str, stdout_path: Path, stderr_path: Path
+    uid: str, cmd: str, stdout_path: Path, stderr_path: Path, cwd: str | None = None
 ) -> None:
     """Launch the target command and persist launch results."""
     meta = load_job_meta(uid)
@@ -1829,7 +1846,9 @@ def launch_process_for_job_worker(
         return
 
     try:
-        pid = launch_process_for_job_inner(uid, cmd, stdout_path, stderr_path)
+        pid = launch_process_for_job_inner(
+            uid, cmd, stdout_path, stderr_path, cwd
+        )
     except Exception as exc:
         mark_launch_failed(uid, meta, str(exc))
         return
@@ -1838,7 +1857,7 @@ def launch_process_for_job_worker(
 
 
 def spawn_launch_worker_for_job(
-    uid: str, cmd: str, stdout_path: Path, stderr_path: Path
+    uid: str, cmd: str, stdout_path: Path, stderr_path: Path, cwd: str | None = None
 ) -> int:
     package_root = Path(__file__).resolve().parents[1]
     worker_script = "\n".join(
@@ -1854,6 +1873,7 @@ def spawn_launch_worker_for_job(
             "    payload['cmd'],",
             "    Path(payload['stdout_path']),",
             "    Path(payload['stderr_path']),",
+            "    payload.get('cwd'),",
             ")",
         ]
     )
@@ -1862,6 +1882,7 @@ def spawn_launch_worker_for_job(
         "cmd": cmd,
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
+        "cwd": cwd,
     }
 
     # Write to temp script to avoid Windows lock on Scripts directory
@@ -1910,7 +1931,11 @@ def cleanup_partial_job_state(uid: str, record_dir: Path) -> None:
     shutil.rmtree(record_dir, ignore_errors=True)
 
 
-def create_job(cmd: str) -> str:
+def create_job(cmd: str, cwd: str | None = None) -> str:
+    resolved_cwd = cwd or os.getcwd()
+    if not os.path.isdir(resolved_cwd):
+        raise ValueError(f"cwd is not a directory: {resolved_cwd}")
+
     ensure_jobs_dir()
     scan_jobs_from_disk(refresh_process=True)
     uid, name, root = create_record_identity(cmd)
@@ -1925,6 +1950,7 @@ def create_job(cmd: str) -> str:
             "name": name,
             "cmd": cmd,
             "command_root": root,
+            "cwd": resolved_cwd,
             "started_at": started_at,
             "status": "launching",
             "pid": None,
@@ -1936,6 +1962,7 @@ def create_job(cmd: str) -> str:
             "matched_pattern": None,
             "matched_stream": None,
             "record_issue": None,
+            "last_read_offset": 0,
         }
 
         index = load_index()
@@ -1953,7 +1980,9 @@ def create_job(cmd: str) -> str:
         stdout_path = stdout_file_for_uid(uid)
         stderr_path = stderr_file_for_uid(uid)
         try:
-            worker_pid = spawn_launch_worker_for_job(uid, cmd, stdout_path, stderr_path)
+            worker_pid = spawn_launch_worker_for_job(
+                uid, cmd, stdout_path, stderr_path, resolved_cwd
+            )
         except Exception as exc:
             mark_launch_failed(uid, metadata, f"launch worker failed to start: {exc}")
             return name
@@ -2008,7 +2037,6 @@ def remove_job(job_ref: str) -> bool:
     if snapshot.get("process_state") == "alive" and isinstance(pid, int):
         kill_process(pid)
 
-    uid = str(snapshot["uid"])
     delete_job_records([snapshot])
     return True
 
@@ -2065,6 +2093,7 @@ def restart_job(job_ref: str) -> str:
     if not cmd:
         raise click.ClickException(f"Job has no command: {job_ref}")
 
+    cwd = snapshot.get("cwd")
     uid = str(snapshot["uid"])
     name = str(snapshot.get("name") or uid)
 
@@ -2075,7 +2104,9 @@ def restart_job(job_ref: str) -> str:
     stdout_path = stdout_file_for_uid(uid)
     stderr_path = stderr_file_for_uid(uid)
 
-    new_pid = launch_process_for_job_inner(uid, cmd, stdout_path, stderr_path)
+    new_pid = launch_process_for_job_inner(
+        uid, cmd, stdout_path, stderr_path, cwd
+    )
 
     meta = load_job_meta(uid)
     if meta is None:
@@ -2100,25 +2131,51 @@ def main() -> None:
 
 @main.command()
 @click.argument("cmd", nargs=-1, required=True)
-def run(cmd: tuple[str, ...]) -> None:
+@click.option(
+    "--cwd",
+    default=None,
+    help="Working directory for the job (default: current directory)",
+)
+def run(cmd: tuple[str, ...], cwd: str | None) -> None:
     """Run a command in the background. Arguments are joined with spaces."""
     cmd_str = " ".join(cmd)
     try:
-        click.echo(create_job(cmd_str))
+        click.echo(create_job(cmd_str, cwd=cwd))
     except Exception as exc:  # pragma: no cover - surfaced to CLI
         raise click.ClickException(str(exc)) from exc
 
 
 @main.command("list")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.option(
+    "--all",
+    "-a",
+    "show_all",
+    is_flag=True,
+    help="Show all jobs, including settled ones",
+)
+@click.option(
+    "--page",
+    "page",
+    type=click.IntRange(min=1),
+    default=1,
+    help="Page number (table format, 20 jobs per page)",
+)
 @click.option("--wide", is_flag=True, help="Wider command column")
 @click.option("--format", "output_format", type=click.Choice(["table", "json"]), default="table", help="Output format")
-def list_cmd(json_output: bool, wide: bool, output_format: str) -> None:
-    """List all background jobs.
+def list_cmd(
+    json_output: bool, show_all: bool, page: int, wide: bool, output_format: str
+) -> None:
+    """List background jobs.
 
-    Use --wide to show longer commands, or --format json for machine-readable output.
+    By default only running jobs are shown; use --all to include settled
+    jobs. Use --page to page through long tables, --wide to show longer
+    commands, or --format json for machine-readable output.
     """
     jobs = scan_jobs_from_disk()
+
+    if not show_all:
+        jobs = [job for job in jobs if job.get("status") in RUNNING_STATUSES]
 
     if json_output or output_format == "json":
         click.echo(dump_json(jobs))
@@ -2129,10 +2186,53 @@ def list_cmd(json_output: bool, wide: bool, output_format: str) -> None:
         return
 
     from rich.console import Console
+
+    # In pipes (agent-driven CLI) there is no terminal width to inherit, so
+    # rich would squeeze every column to ~5 chars and truncate the Dir/name
+    # columns into uselessness. Give piped output enough room to render the
+    # intended columns; interactive terminals keep their real width.
+    console = Console(width=200) if not sys.stdout.isatty() else Console()
+
+    total = len(jobs)
+    total_pages = max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE)
+    window = jobs[(page - 1) * LIST_PAGE_SIZE : page * LIST_PAGE_SIZE]
+
+    if not window:
+        click.echo(f"No jobs on page {page}.")
+        click.echo(f"use --page {total_pages}")
+        return
+
+    running = [job for job in window if job.get("status") in RUNNING_STATUSES]
+    settled = [job for job in window if job.get("status") not in RUNNING_STATUSES]
+
+    sections_mode = show_all and any(
+        job.get("status") not in RUNNING_STATUSES for job in jobs
+    )
+    if sections_mode:
+        if running:
+            render_jobs_table(console, running, title="Running", dim=False, wide=wide)
+        if settled:
+            render_jobs_table(console, settled, title="Settled", dim=True, wide=wide)
+    else:
+        render_jobs_table(console, window, title="Background Jobs", dim=False, wide=wide)
+
+    if total > LIST_PAGE_SIZE:
+        first = (page - 1) * LIST_PAGE_SIZE + 1
+        last = min(page * LIST_PAGE_SIZE, total)
+        click.echo(f"Showing {first}-{last} of {total} (page {page}/{total_pages})")
+        if page < total_pages:
+            click.echo(f"use --page {page + 1}")
+
+
+def render_jobs_table(
+    console: object, jobs: list[dict], *, title: str, dim: bool, wide: bool
+) -> None:
+    """Render one bg job table (used by list_cmd for the two-tier list)."""
     from rich.table import Table
 
-    console = Console()
-    table = Table(title="Background Jobs")
+    table = Table(title=title)
+    if dim:
+        table.style = "dim"
     table.add_column("Name", style="cyan")
     table.add_column("UID", style="dim")
     table.add_column("Record", style="white")
@@ -2142,6 +2242,7 @@ def list_cmd(json_output: bool, wide: bool, output_format: str) -> None:
     table.add_column("PID", style="magenta")
     table.add_column("Started", style="dim")
     table.add_column("Elapsed", style="blue")
+    table.add_column("Dir", style="dim")
     cmd_max_width = 120 if wide else 60
     table.add_column("Command", style="white", max_width=cmd_max_width)
 
@@ -2182,6 +2283,7 @@ def list_cmd(json_output: bool, wide: bool, output_format: str) -> None:
             "completed": "green",
             "failed": "red",
         }.get(update_type, "white")
+        cwd_display = (job.get("cwd") or "-")[:40]
         table.add_row(
             job.get("name", "?"),
             job.get("uid", "?"),
@@ -2194,6 +2296,7 @@ def list_cmd(json_output: bool, wide: bool, output_format: str) -> None:
             str(job.get("pid") or "-"),
             (job.get("started_at") or "?")[:19],
             format_elapsed(job.get("elapsed_seconds")),
+            cwd_display,
             (job.get("cmd") or "?")[:cmd_max_width],
         )
 
@@ -2292,7 +2395,12 @@ def wait_all(timeout_seconds: float | None = None) -> None:
 
 @main.command()
 @click.argument("job_ref")
-def read(job_ref: str) -> None:
+@click.option(
+    "--tail",
+    is_flag=True,
+    help="Print only new output since the last tail read (persists per-job offset)",
+)
+def read(job_ref: str, tail: bool) -> None:
     """Read job stdout."""
     job = load_job_snapshot(job_ref, refresh_process=False)
     if not job or job.get("record_state") != "ok":
@@ -2304,7 +2412,39 @@ def read(job_ref: str) -> None:
         click.echo(f"Job output not found: {job_ref}", err=True)
         sys.exit(1)
 
-    click.echo(stdout_file.read_text(encoding="utf-8"))
+    cwd = job.get("cwd")
+    if cwd:
+        click.echo(f"cwd: {cwd}")
+
+    if not tail:
+        click.echo(stdout_file.read_text(encoding="utf-8"))
+        return
+
+    uid = str(job["uid"])
+    meta = load_job_meta(uid)
+    offset = 0
+    if meta is not None:
+        stored = meta.get("last_read_offset")
+        if isinstance(stored, int) and stored > 0:
+            offset = stored
+
+    with open(stdout_file, "rb") as handle:
+        size = handle.seek(0, os.SEEK_END)
+        if offset > size:
+            offset = 0
+        handle.seek(offset)
+        content = handle.read().decode("utf-8", errors="replace")
+
+    if content:
+        click.echo(content)
+
+    if meta is not None and size != offset:
+        updated = dict(meta)
+        updated["last_read_offset"] = size
+        try:
+            write_meta(uid, updated)
+        except OSError:
+            pass
 
 
 @main.command()
@@ -2319,6 +2459,10 @@ def logs(job_ref: str) -> None:
     record_dir = Path(job["record_path"])
     stdout_file = record_dir / "stdout.txt"
     stderr_file = record_dir / "stderr.txt"
+
+    cwd = job.get("cwd")
+    if cwd:
+        click.echo(f"cwd: {cwd}")
 
     if stdout_file.exists():
         click.echo("=== STDOUT ===")
@@ -2442,7 +2586,7 @@ def completions(ctx: click.Context, shell: str) -> None:
     """
     tool: str = ctx.parent.info_name if ctx.parent is not None and ctx.parent.info_name is not None else "bg"
     click.echo(f"# Enable shell completion for {tool}:")
-    click.echo(f"# Add the following to your shell profile:")
+    click.echo("# Add the following to your shell profile:")
     click.echo(f"eval $(_{tool.upper()}_COMPLETE={shell}_source {tool})")
 
 

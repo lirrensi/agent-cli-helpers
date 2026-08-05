@@ -22,6 +22,16 @@ If not installed:
 uv tool install "git+https://github.com/lirrensi/agent-sommelier"
 ```
 
+## Command name: `bg` vs `bgj`
+
+The CLI installs two entry points for the same command: **`bg`** and **`bgj`**.
+
+- `bg` collides with the **shell builtin** of the same name (POSIX job control — "move jobs to the background"). Builtins always win over PATH lookup, so on **bash/zsh/fish** `bg --help` shows the shell's builtin, not this tool.
+- **Use `bgj` on bash/zsh/fish** — it is collision-free. On PowerShell/cmd (no `bg` builtin) plain `bg` works.
+- If you prefer `bg` everywhere, alias it in your shell profile: `alias bg='env bg'` (bash/zsh). (`command bg` does NOT work — it resolves to the builtin too.)
+
+All examples below use `bg`; substitute `bgj` on POSIX shells.
+
 ## Usage
 
 `bg` runs commands in your platform shell. `bg run` returns immediately after creating the handle; a detached worker finishes the launch in the background and jobs appear running unless failure is proven. A short best-effort PID probe updates the record a few seconds later when it can. On Windows it prefers PowerShell 7, then Windows PowerShell, then `cmd.exe`, launches jobs without a visible console window when PowerShell is available, and expects shell syntax that matches the shell you expect.
@@ -32,17 +42,25 @@ bg run "python long_script.py"
 # Returns: sleepy-pytest (friendly name)
 ```
 
+Run from a specific directory (the process actually runs there, and the directory is recorded):
+```bash
+bg run --cwd /path/to/repo "pytest tests/ -v"
+```
+
 ```powershell
 bg run "python --version"
 ```
 
-### List All Jobs
+### List Jobs
 ```bash
-bg list
-bg list --json
+bg list            # running jobs only (running / launching / starting)
+bg list --all      # everything: Running section + dim Settled section
+bg list --all --page 2   # page through long lists (20 rows per page)
+bg list --json     # running jobs as JSON (same default filter)
+bg list --all --json     # full JSON dump (never paginated)
 ```
 
-`bg list` shows live job details including name, UID, record state, process state, status, PID, start time, elapsed runtime, and command.
+`bg list` shows live job details including name, UID, record state, process state, status, PID, start time, elapsed runtime, the recorded working directory (Dir column), and command. Tables longer than 20 rows print a `Showing X-Y of Z (page N/N)` footer plus a `use --page N` hint.
 
 ### Check Job Status
 ```bash
@@ -91,9 +109,12 @@ In an interactive TTY terminal, the default behavior is unchanged (wait forever;
 
 ### Read Job Output
 ```bash
-bg read sleepy-pytest   # stdout only
-bg logs sleepy-pytest   # stdout + stderr
+bg read sleepy-pytest            # full stdout
+bg read sleepy-pytest --tail     # only output since the last tail read
+bg logs sleepy-pytest            # stdout + stderr
 ```
+
+`bg read <ref> --tail` prints only new output and remembers the read position per job, so repeated calls never re-print old content — ideal for watching a running job without re-reading the whole file. `bg read` / `bg logs` print a `cwd: <path>` header when the job records a working directory.
 
 ### Remove Job
 ```bash
@@ -112,7 +133,7 @@ Deletes every job that is not currently running, including stale or broken recor
 bg restart sleepy-pytest
 ```
 
-`bg restart <ref>` kills the process if alive and starts a new one with the same command. Output appends to existing stdout/stderr files (like ctrl+c + run again). The job keeps the same UID and name.
+`bg restart <ref>` kills the process if alive and starts a new one with the same command and the same recorded working directory. Output appends to existing stdout/stderr files (like ctrl+c + run again). The job keeps the same UID and name.
 
 ## Workflow Pattern
 
@@ -134,7 +155,7 @@ bg read $jobName
 
 Jobs keep runtime state in your OS temp directory under `agentcli_bgjobs/`:
 - `index.json` - Friendly-name and UID lookup index
-- `records/<uid>/meta.json` - Canonical job metadata (`uid`, `name`, `cmd`, `pid`, `status`, `started_at`, optional `finished_at`, optional `exit_code`, optional `record_issue`, and live runtime fields)
+- `records/<uid>/meta.json` - Canonical job metadata (`uid`, `name`, `cmd`, `cwd`, `pid`, `status`, `started_at`, optional `finished_at`, optional `exit_code`, optional `record_issue`, `last_read_offset`, and live runtime fields)
 - `records/<uid>/meta.json` - Canonical job metadata (`uid`, `name`, `cmd`, `pid`, `status`, `started_at`, optional `finished_at`, optional `exit_code`, optional `record_issue`, and lightweight event fields such as `last_event_type`, `last_event_at`, `matched_pattern`, and `matched_stream`)
 - `records/<uid>/stdout.txt` - Standard output
 - `records/<uid>/stderr.txt` - Standard error
@@ -169,6 +190,9 @@ bg run "curl -O https://example.com/large_file.zip"
 # Run tests in background
 bg run "pytest tests/ -v"
 
+# Run from a specific repo directory
+bg run --cwd /path/to/repo "pytest tests/ -v"
+
 # Start a server
 bg run "python -m http.server 8000"
 
@@ -177,6 +201,15 @@ bg status sleepy-pytest
 
 # Check all running jobs
 bg list
+
+# See everything, including finished jobs
+bg list --all
+
+# Page through a long history
+bg list --all --page 2
+
+# Watch live output without re-printing old lines
+bg read sleepy-pytest --tail
 
 # Wait for a job to finish
 bg wait sleepy-pytest

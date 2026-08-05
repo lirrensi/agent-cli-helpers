@@ -68,6 +68,8 @@ Send a desktop notification.
 
 Run and track background jobs with friendly names, stable UIDs, and separate record/process state.
 
+> **Entry points:** the CLI installs as both `bg` and `bgj` (same command). `bg` collides with the POSIX shell builtin of the same name (bash/zsh/fish resolve builtins before PATH), so those shells must use **`bgj`** or `alias bg='env bg'`; PowerShell/cmd can use `bg` directly.
+
 ### Commands
 
 #### `bg run "CMD"`
@@ -76,6 +78,9 @@ Start a command in the background.
 
 **Arguments:**
 - `CMD` — Command to execute (string)
+
+**Options:**
+- `--cwd DIR` — Working directory for the job (default: the current directory). DIR must exist and be a directory; the job process actually runs there. Invalid DIR fails before any record is created.
 
 **Output:**
 - Returns a friendly name like `sleepy-pytest`
@@ -90,16 +95,24 @@ Start a command in the background.
 - On Windows, PowerShell-backed jobs are launched hidden so they do not expose a closable console window
 - Windows commands should use syntax for the selected shell unless they explicitly invoke another shell
 - `bg run` returns immediately after creating the handle; a detached worker finishes launch in the background
+- The launch directory is recorded in the job record as `cwd`; `bg restart` reuses it for the relaunch
 
 #### `bg list [--json]`
 
-List all background jobs.
+List background jobs.
 
 **Options:**
 - `--json` — Output as JSON array
+- `--all` (alias `-a`) — Also show settled jobs; the default shows only running jobs (statuses `running`, `launching`, `starting`)
+- `--page N` — Page number (table format, 20 jobs per page, default 1)
+- `--wide` — Wider command column
+- `--format table|json` — Output format (`--json` is an alias for `--format json`)
 
 **Output (human-readable):**
-- Table with columns: Name, UID, Record, Process, Status, Update, PID, Started, Elapsed, Command
+- Table with columns: Name, UID, Record, Process, Status, Update, PID, Started, Elapsed, Dir, Command
+- Dir shows the working directory recorded at launch (truncated to ~40 chars; `-` for legacy records without `cwd`)
+- With `--all`, running jobs render first under a **Running** section, then settled jobs (completed/failed/stopped/stale/broken) under a dim **Settled** section; when there are no settled jobs a single table is shown
+- Tables longer than 20 rows are paginated: a footer `Showing X-Y of Z (page N/N)` is printed, plus a `use --page N` hint when more pages exist
 - Status colors: yellow=running, green=completed, red=failed
 
 **Output (JSON):**
@@ -110,6 +123,7 @@ List all background jobs.
       "id": "b71d4e2f9a8c",
       "name": "sleepy-pytest",
       "cmd": "pytest tests",
+      "cwd": "C:\\work\\agent-sommelier",
       "record_state": "ok",
       "process_state": "alive",
       "status": "running",
@@ -129,6 +143,7 @@ List all background jobs.
 ```
 
 **Behavior:**
+- JSON output is never paginated. The running-only filter applies to the default `--json` output too; `--all --json` is the full dump
 - Automatically checks if running processes are still alive
 - Preserves record problems separately from process state
 - Refreshes live process details before rendering list output
@@ -192,8 +207,12 @@ Read job stdout.
 **Arguments:**
 - `JOB_REF` — Friendly name or UID
 
+**Options:**
+- `--tail` — Print only output written since the last tail read. The per-job read offset is persisted in the record, so repeated calls never re-print old content; prints nothing (exit 0) when there is nothing new
+
 **Output:**
-- Complete stdout contents
+- Complete stdout contents (or only the new content with `--tail`)
+- A `cwd: <path>` header line is printed first when the record has a recorded working directory
 
 #### `bg logs JOB_REF`
 
@@ -204,6 +223,7 @@ Read job stdout and stderr.
 
 **Output:**
 ```
+cwd: C:\work\agent-sommelier   (only when the record has a cwd)
 === STDOUT ===
 <stdout content>
 
@@ -240,7 +260,7 @@ Terminal job records are self-pruning under the retention policy above.
 | File | Contents |
 |------|----------|
 | `index.json` | Friendly-name and UID lookup index |
-| `records/{uid}/meta.json` | Canonical job metadata (uid, name, cmd, pid, status, timestamps, last event fields, launch issues) |
+| `records/{uid}/meta.json` | Canonical job metadata (uid, name, cmd, cwd, pid, status, timestamps, last event fields, launch issues, tail read offset) |
 | `records/{uid}/stdout.txt` | Captured stdout |
 | `records/{uid}/stderr.txt` | Captured stderr |
 | `records/{uid}/exit_code.txt` | Persisted exit code |
