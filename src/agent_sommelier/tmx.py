@@ -22,7 +22,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Any, TypedDict
+from typing import NotRequired, TypedDict
 
 
 class _SessionInfo(TypedDict):
@@ -30,6 +30,9 @@ class _SessionInfo(TypedDict):
     name: str
     windows: int
     status: str
+    created: NotRequired[int]
+    path: NotRequired[str]
+    sid: NotRequired[int]
 
 import click
 from rich.console import Console
@@ -365,21 +368,40 @@ def _render_sessions_table(sessions: list[_SessionInfo]) -> None:
 
 
 def _get_session_list() -> list[_SessionInfo]:
-    """Fetch current session list from tmux."""
+    """Fetch current session list from tmux, in start order.
+
+    Ordering key is ``session_id`` (real tmux numbers sessions $0, $1, $2...
+    sequentially at creation — exact start order, even within one second).
+    psmux stubs every id to $0, so on Windows we fall back to the creation
+    epoch (``created``), with name as a deterministic tiebreak. That keeps
+    the picker and ``ttt INDEX`` consistent on both platforms.
+    """
     result = _tmux(
         "list-sessions",
         "-F",
-        "#{session_name}\t#{session_windows}\t#{?session_attached,attached,detached}",
+        "#{session_name}\t#{session_windows}\t"
+        "#{?session_attached,attached,detached}\t"
+        "#{session_created}\t#{pane_current_path}\t#{session_id}",
     )
     if result.returncode != 0 or not result.stdout.strip():
         return []
     sessions: list[_SessionInfo] = []
     for line in result.stdout.strip().splitlines():
+        if not line.strip():
+            continue
         parts = line.split("\t")
-        if len(parts) == 3:
-            sessions.append(
-                {"name": parts[0], "windows": int(parts[1]), "status": parts[2]}
-            )
+        sid_raw = parts[5].lstrip("$") if len(parts) > 5 else ""
+        sessions.append(
+            {
+                "name": parts[0],
+                "windows": int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0,
+                "status": parts[2] if len(parts) > 2 else "detached",
+                "created": int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0,
+                "path": parts[4] if len(parts) > 4 else "",
+                "sid": int(sid_raw) if sid_raw.isdigit() else 0,
+            }
+        )
+    sessions.sort(key=lambda s: (s.get("sid", 0), s.get("created", 0), s["name"]))
     return sessions
 
 
@@ -451,10 +473,16 @@ def _render_picker(
         for i, s in enumerate(sessions):
             row_idx = i + 1
             dot = "@" if s["status"] == "attached" else "•"
-            label = f"  {dot}  {s['name']}  [dim]{s['windows']}w[/]"
+            path = s.get("path") or "-"
+            if len(path) > 40:
+                path = "..." + path[-37:]
+            label = (
+                f"  {dot}  {i}  {s['name']}  "
+                f"[dim]{path}[/]  [dim]{s['windows']}w[/]"
+            )
 
             if cursor == row_idx:
-                console.print(f"   [black on cyan]{label:<35}[/]")
+                console.print(f"   [black on cyan]{label:<64}[/]")
             else:
                 fg = "cyan" if s["status"] == "attached" else "white"
                 console.print(f"   [{fg}]{label}[/]")
@@ -502,12 +530,10 @@ def _prompt_new_session() -> str | None:
     return name
 
 
-@cli.command()
-def manager() -> None:
-    """Interactive session picker (human-friendly TUI).
+def run_manager() -> None:
+    """Run the interactive session picker loop.
 
-    Browse tmux sessions with arrow keys, attach, kill, or create new.
-    After detaching from a session, returns to the picker.
+    Shared by ``tmx manager`` and the ``ttt`` alias. Requires a TTY.
     """
     if not sys.stdin.isatty():
         click.echo("manager requires an interactive terminal.", err=True)
@@ -591,6 +617,16 @@ def manager() -> None:
             sessions = _get_session_list()
             cursor = len(sessions)  # move cursor to the new session
             message = f"Created: {name}"
+
+
+@cli.command()
+def manager() -> None:
+    """Interactive session picker (human-friendly TUI).
+
+    Browse tmux sessions with arrow keys, attach, kill, or create new.
+    After detaching from a session, returns to the picker.
+    """
+    run_manager()
 
 
 # ─── entry point ─────────────────────────────────────────────────────────────
