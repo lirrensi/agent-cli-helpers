@@ -30,7 +30,7 @@
 
 ## Why Agent Sommelier?
 
-You have a bare-bones app. You need to add functionality — background jobs, notifications, task tracking, memory, cron scheduling, SSH, screenshots, terminal sessions, scheduled thinking. You *could* build each one from scratch. Or you could reach for tools that already do it, do it well, and don't lock you into a workflow.
+You have a bare-bones app. You need to add functionality — background jobs, notifications, task tracking, cron scheduling, SSH, screenshots, terminal sessions, scheduled thinking. You *could* build each one from scratch. Or you could reach for tools that already do it, do it well, and don't lock you into a workflow.
 
 That's this repo.
 
@@ -38,9 +38,7 @@ That's this repo.
 
 - **Already have a cron setup but hate how it works?** Here's a better one.
 - **Need background jobs but don't want to wrestle with `nohup`?** Grab ours.
-- **Want your agent to remember things between conversations?** Memory's right here.
 - **Need a task system that doesn't require a database?** Done.
-- **Need to build an interactive HTML page from a conversation?** `artify`.
 - **Need to send a deep-thinking model a hard question and stream the answer?** `amun`.
 
 Pick what you need. Leave the rest. They all work independently — and they all work together when you want them to.
@@ -64,7 +62,7 @@ Pick what you need. Leave the rest. They all work independently — and they all
 | `skill-store` | On-demand skill registry — keep hundreds, load a few | built-in |
 | `skill-store-mcp` | MCP server exposing the skill store to any agent | `[mcp-srv]` |
 
-### Skills (17)
+### Skills (8)
 
 Each skill teaches an agent how to install and use the matching tool on demand — no preinstalled dependencies required.
 
@@ -75,22 +73,15 @@ npx skills add https://github.com/lirrensi/agent-sommelier
 | Skill | What it gives the agent |
 |-------|--------------------------|
 | `bg-jobs` | Run & track background processes without tmux |
-| `calm-down` | De-escalation when the agent is heading the wrong way |
 | `crony` | Schedule jobs with "every 1h" instead of cron expressions |
 | `desktop-notifications` | One command, three OSes |
-| `document-extractor` | Convert PDFs, Office docs, media → Markdown |
-| `edge-tts` | Text-to-speech via Microsoft Edge |
-| `engage` | Autonomous-execution mode: build, test, verify, deliver |
 | `essh` | SSH profile manager — save hosts, generate keys, filter commands |
-| `memory-bank` | **Core.** Episodic, semantic, procedural memory across sessions |
-| `micropatch` | Keep fork features alive across upstream updates |
-| `best-practices-researcher` | Research patterns and make technology decisions |
-| `batch-task-executor` | Fan-out orchestration from any task source |
 | `screenshot` | Capture screens in scripts and pipelines |
 | `skill-store` | Lazy-load hundreds of skills without polluting context |
 | `task-system` | Full task lifecycle — deps, queues, 12 statuses, web UI |
 | `tmux` | Terminal multiplexing for SSH, REPLs, parallel agents |
-| `artify` | **Build & ship interactive HTML artifacts — and read their state back** |
+
+> **Looking for more skills?** Skills not bundled here — `memory-bank`, `engage`, `artify`, `document-extractor`, `edge-tts`, `calm-down`, `micropatch`, `best-practices-researcher`, `batch-task-executor` — have moved to the [`skills-hoard`](https://github.com/lirrensi/skills-hoard) collection. Install any of them the same way with `npx skills add https://github.com/lirrensi/skills-hoard`.
 
 ---
 
@@ -104,7 +95,7 @@ The `[all]` extra installs every optional dependency: crony, screenshot, web UI,
 
 ```bash
 # Core only — no optional deps
-uv tool install "git+https://github.com/lirrensi/agent-sommelier"
+    uv tool install "git+https://github.com/lirrensi/agent-sommelier"
 
 # Pick what you need
 uv tool install "git+https://github.com/lirrensi/agent-sommelier[crony]"      # adds crony
@@ -234,28 +225,6 @@ amun doctor                             # verify config + endpoint reachability
 
 Configurable OpenAI-compatible endpoint, streams by default, surfaces `reasoning`/`reasoning_content` from thinking models in dim yellow, `$ENV_VAR` references in the config. Defaults to the *"You are a senior architect and engineer. Think deeply before answering."* system prompt.
 
-### 🎨 artify — HTML artifact build, serve, snapshot (standalone skill)
-
-> **Standalone & install-free.** `artify` is a self-contained skill under
-> [`skills/artify/`](skills/artify/) — it is **not** part of this package and needs
-> no global install. Its CLI ships with its own `pyproject.toml` and runs via `uv`
-> on demand. Use the bundled launcher:
-
-```bash
-# From the skill folder: skills/artify/
-./scripts/artify open report.html          # offline, finished artifact
-./scripts/artify serve report.html         # live iteration, auto-reload
-./scripts/artify serve report.html --webview   # chromeless native window
-./scripts/artify list                      # port, pid, file, status, url
-./scripts/artify kill 54321
-./scripts/artify restart 54321
-./scripts/artify snapshot 54321 --timeout 60   # read page state as JSON
-```
-
-Build a self-contained HTML file (or use one of the bundled starters), serve it locally, the browser tab auto-reloads as you save. When the page is a form, a dashboard, or any interactive surface, `artify snapshot <port>` collects its current state and prints it as JSON — the HTML becomes both the interface and the structured input. Watch a long-running serve with `bg run "scripts/artify serve report.html"`.
-
-The full skill — artifact families, design principles, the snapshot protocol, starter catalog, and the install-free CLI — lives in [`skills/artify/SKILL.md`](skills/artify/SKILL.md).
-
 ### 🧠 skill-store — On-demand skill registry
 
 ```bash
@@ -278,12 +247,7 @@ A local registry for agent skills. Keep hundreds on disk, load only what you nee
 
 Skills are how an agent installs and uses a tool on demand. They are Markdown files under `skills/<name>/SKILL.md` plus optional `references/`, `scripts/`, `starters/`, and `templates/` subfolders. The agent reads the SKILL.md, follows the install path, and uses the tool.
 
-Two skills deserve a special callout:
-
-- **`memory-bank`** is the **core** skill. It keeps your agent's context alive across sessions — episodic, semantic, and procedural memory types, an auto-maintained `INDEX.md` with tag search, Obsidian-compatible templates. Run `bat ./memory/INDEX.md` to orient yourself when resuming work.
-- **`engage`** is the **autonomous-execution trigger**. When the user says "engage", "go autonomous", "execute the plan", or "make it happen", the agent switches to plan → build → test → verify → deliver with no questions asked until completion.
-
-Other skills worth knowing: `task-system` for the in-repo task CLI, `skill-store` for lazy-loading hundreds of skills, `tmux` for terminal session control, `best-practices-researcher` for tech-stack decisions, `micropatch` for surviving upstream changes in a fork, `document-extractor` for turning PDFs and Office docs into Markdown, and `artify` for when the right output is a browser page instead of a wall of text.
+Notable skills worth knowing: `task-system` for the in-repo task CLI, `skill-store` for lazy-loading hundreds of skills, `tmux` for terminal session control, and `bg-jobs` for background processes without tmux.
 
 Full inventory and behavior of every skill is in [`docs/product.md`](docs/product.md#skills).
 
@@ -295,19 +259,10 @@ This repo is designed *for* agents. Each tool can be self-installed on demand us
 
 ```
 skills/
-├── artify/                 # HTML artifacts, live reload, snapshot back
-├── batch-task-executor/    # fan-out work from any task source
-├── best-practices-researcher/   # patterns + tech decisions
 ├── bg-jobs/                # background jobs without tmux
-├── calm-down/              # de-escalation
 ├── crony/                  # human-readable cron
 ├── desktop-notifications/  # notify across OSes
-├── document-extractor/     # PDF/Office/media → Markdown
-├── edge-tts/               # text-to-speech
-├── engage/                 # autonomous-execution mode
 ├── essh/                   # SSH profiles + filters
-├── memory-bank/            # persistent cross-session memory
-├── micropatch/             # fork-feature survival
 ├── screenshot/             # screen capture
 ├── skill-store/            # lazy-load hundreds of skills
 ├── task-system/            # tasks CLI, lifecycle, web UI
@@ -319,6 +274,8 @@ The pattern:
 1. Agent checks if tool exists: `crony --help`
 2. If not, installs it: `npx skills add https://github.com/lirrensi/agent-sommelier`
 3. Uses it
+
+Skills beyond this set — `memory-bank`, `engage`, `artify`, `document-extractor`, and more — now live in the [`skills-hoard`](https://github.com/lirrensi/skills-hoard) collection. Install any of them the same way with `npx skills add https://github.com/lirrensi/skills-hoard`.
 
 No MCP servers required for the core experience. No OAuth. No config files. Just tools that agents can reach for.
 
@@ -343,7 +300,7 @@ agent-sommelier/
 │   │   └── mcp.py                   #   `skill-store-mcp` MCP server
 │   ├── tmx.py                       # tmux/psmux session control
 │   └── amun.py                      # deep-thinking LLM question-asker
-├── skills/                          # 17 agent skill definitions (incl. standalone artify/)
+├── skills/                          # 8 agent skill definitions
 ├── docs/                            # product.md, spec.md, arch.md
 ├── tests/                           # pytest suite
 ├── pyproject.toml                   # package metadata + 14 entry points
