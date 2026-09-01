@@ -4,7 +4,7 @@ requires-python = ">=3.10"
 
 [[package]]
 name = "agent-sommelier-cli"
-version = "1.5.0"
+version = "1.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -57,8 +57,8 @@ requires-dist = [
     { name = "croniter", marker = "extra == 'crony'", specifier = ">=3.0.0" },
     { name = "dateparser", marker = "extra == 'crony'", specifier = ">=1.2.0" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115.0" },
-    { name = "mcp", specifier = ">=1.0.0" },
-    { name = "mcp", marker = "extra == 'mcp-srv'", specifier = ">=1.0.0" },
+    { name = "mcp", specifier = ">=1.0.0,<2.0.0" },
+    { name = "mcp", marker = "extra == 'mcp-srv'", specifier = ">=1.0.0,<2.0.0" },
     { name = "mss", marker = "extra == 'screenshot'", specifier = ">=9.0.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pillow", marker = "extra == 'screenshot'", specifier = ">=10.0.0" },

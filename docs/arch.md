@@ -657,7 +657,7 @@ skill-store-mcp = "agent_sommelier.skill_store.mcp:main"
 
 **Transport:** stdio (default). The server is spawned as a subprocess by the agent, communicates over JSON-RPC via stdin/stdout. No HTTP server needed.
 
-**Dependencies:** Requires `mcp >= 1.0.0` (optional `[mcp-srv]` extra).
+**Dependencies:** Requires `mcp >= 1.0.0, <2.0.0` (in base install; also `[mcp-srv]` extra). mcp 2.x removed `mcp.server.fastmcp`, so it is explicitly capped.
 
 **Integration in opencode.json:**
 ```json
@@ -1859,7 +1859,7 @@ mss >= 9.0.0           <-- screenshot (optional, primary capture)
     |
 pillow >= 10.0.0       <-- screenshot (optional, mss dependency)
     |
-mcp >= 1.0.0           <-- skill-store (optional [mcp-srv], MCP runtime)
+mcp >= 1.0.0,<2.0.0     <-- skill-store (optional [mcp-srv], MCP runtime; 2.x removed fastmcp)
 ```
 
 ---

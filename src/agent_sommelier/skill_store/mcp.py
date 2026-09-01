@@ -303,17 +303,46 @@ try:
         })
 
 except ImportError:
-    # The mcp package is optional — expose a clear error if missing
+    # mcp is missing OR incompatible (mcp 2.x removed mcp.server.fastmcp).
+    # Diagnose the real problem so the fix suggested actually works.
     FastMCP = None  # type: ignore[assignment]
 
+    def _mcp_problem() -> str:
+        """Explain why the MCP server cannot start."""
+        try:
+            from importlib.metadata import PackageNotFoundError, version
+
+            try:
+                mcp_version = version("mcp")
+            except PackageNotFoundError:
+                mcp_version = "?"
+        except Exception:
+            mcp_version = "?"
+        try:
+            import mcp  # noqa: F401
+        except ImportError:
+            return (
+                "the 'mcp' package is not installed.\n"
+                "mcp is part of the base install, so reinstall the tool:\n"
+                "    uv tool install --force agent-sommelier-cli\n"
+                "or: pip install --upgrade agent-sommelier-cli"
+            )
+        # mcp imports fine but mcp.server.fastmcp is gone -> mcp 2.x
+        return (
+            f"the installed 'mcp' package (v{mcp_version}) is incompatible.\n"
+            "skill-store-mcp needs mcp >=1.0,<2.0 — mcp 2.x removed "
+            "mcp.server.fastmcp.\n"
+            "Fix: reinstall the tool so uv resolves a compatible mcp:\n"
+            "    uv tool install --force agent-sommelier-cli\n"
+            "or: pip install --upgrade 'mcp>=1.0,<2.0'"
+        )
+
     def main() -> None:
-        """Entry point that tells the user to install mcp."""
+        """Entry point that diagnoses why the MCP server cannot start."""
         if len(sys.argv) > 1 and sys.argv[1] == "--shutdown":
             _shutdown_mcp()
             return
-        print("skill-store-mcp requires the 'mcp' package.", file=sys.stderr)
-        print("Install with: uv tool install agent-sommelier-cli[mcp]", file=sys.stderr)
-        print("        or: pip install agent-sommelier-cli[mcp]", file=sys.stderr)
+        print("skill-store-mcp cannot start: " + _mcp_problem(), file=sys.stderr)
         sys.exit(1)
 
 else:

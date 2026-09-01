@@ -15,7 +15,7 @@ dependencies = [
     "psutil>=6.0.0",
     "pyyaml>=6.0",
     "watchdog>=4.0.0",
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2.0.0",  # mcp 2.x removed mcp.server.fastmcp (breaks skill-store-mcp)
 ]
 
 [project.optional-dependencies]
@@ -33,7 +33,7 @@ web = [
     "watchfiles>=1.0.0",
 ]
 mcp-srv = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2.0.0",
 ]
 all = [
     "agent-sommelier-cli[crony,screenshot,web,mcp-srv]",

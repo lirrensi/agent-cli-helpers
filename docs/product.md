@@ -1319,7 +1319,7 @@ Shell scripts at `skills/tmux/scripts/tmx.sh` (bash) and `tmx.ps1` (PowerShell) 
 - `schedule >= 1.2.0` — Schedule library (crony)
 - `mss >= 9.0.0` — Cross-platform screenshot (screenshot)
 - `pillow >= 10.0.0` — Image processing (screenshot)
-- `mcp >= 1.0.0` — MCP server runtime for skill-store (`[mcp-srv]` extra)
+- `mcp >= 1.0.0,<2.0.0` — MCP server runtime for skill-store (`[mcp-srv]` extra; capped below 2.x, which removed `mcp.server.fastmcp`)
 
 ---
 
