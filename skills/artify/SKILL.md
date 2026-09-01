@@ -1,7 +1,7 @@
 ---
 name: artify
-description: Build self-contained, single-file HTML artifacts and serve them with the artify CLI. Use for visualizations, interactive tools, presentations, living documents, forms and quizzes that return structured data via artify snapshot, and any browser-native replacement for static files. Prefer adapting starters when there is a close fit; otherwise build from scratch.
-version: 2
+description: Build self-contained, single-file HTML artifacts and serve them with the artify CLI. Use for visualizations, interactive tools, presentations, living documents, forms and quizzes that return structured data via artify snapshot, and any browser-native replacement for static files. Prefer adapting starters when there is a close fit; otherwise build from scratch. No install required — the CLI runs via uv against the bundled standalone package.
+version: 3
 ---
 
 # HTML Artifact Skill
@@ -9,6 +9,30 @@ version: 2
 Build complete browser-native artifacts as single HTML files.
 
 The browser is not just a preview. It is the surface. And when the artifact is interactive, the browser is also the input.
+
+> **Standalone & install-free.** This skill is fully self-contained. The `artify`
+> CLI lives in [`cli/`](cli/) as its own tiny Python package that declares its own
+> requirements. It is **not** part of `agent-sommelier` and needs no global install.
+> Run it via the bundled launcher, which uses `uv run --project` to resolve the
+> deps into a throwaway environment on demand.
+
+## Running the CLI (no install required)
+
+The skill ships a launcher that wires the CLI up without installing anything globally. From the skill's own folder:
+
+- **Windows (PowerShell):** `.\scripts\artify.ps1 <command> [args...]`
+- **macOS / Linux (shell):** `./scripts/artify <command> [args...]`
+
+You only need `uv` on PATH (or set `ARTIFY_UV` to its location). The launcher calls:
+
+```bash
+uv run --project <skill>/cli artify <command> [args...]
+```
+
+which makes `uv` read `cli/pyproject.toml` and create a per-project environment
+with the CLI's declared deps (`click`, `rich`, `psutil`, `watchdog`) the first time.
+Every command below is invoked through this mechanism — never via a globally
+installed `artify`.
 
 ## What This Skill Is
 

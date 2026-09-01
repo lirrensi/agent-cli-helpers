@@ -14,7 +14,6 @@ dependencies = [
     "pillow>=10.0.0",
     "psutil>=6.0.0",
     "pyyaml>=6.0",
-    "watchdog>=4.0.0",
     "mcp>=1.0.0,<2.0.0",  # mcp 2.x removed mcp.server.fastmcp (breaks skill-store-mcp)
 ]
 
@@ -54,7 +53,6 @@ tmx = "agent_sommelier.tmx:cli"
 ttt = "agent_sommelier.ttt:main"
 tttn = "agent_sommelier.ttt:main_n"
 tttl = "agent_sommelier.ttt:main_l"
-artify = "agent_sommelier.artify:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_sommelier"]

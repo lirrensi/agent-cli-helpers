@@ -26,11 +26,7 @@ from unittest import mock
 import click.testing
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-sys.path.insert(0, str(SRC))
-
-import agent_sommelier.artify as artify  # noqa: E402
+import artify_cli.cli as artify  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -821,17 +817,16 @@ def _start_dummy_serve_subprocess(
     # tests for kill/restart only care about the process lifecycle.
     script = (
         "import os, sys, time, signal\n"
-        "sys.path.insert(0, r'%s')\n"
         "import webbrowser\n"
         "webbrowser.open_new_tab = lambda *a, **k: True\n"
-        "import agent_sommelier.artify as a\n"
+        "import artify_cli.cli as a\n"
         "from pathlib import Path\n"
         "a.REGISTRY_DIR = Path(r'%s')\n"
         "# Just sleep until SIGTERM. The test process writes the registry\n"
         "# entry; we don't auto-register so the test can control the data.\n"
         "signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))\n"
         "time.sleep(120)\n"
-    ) % (str((ROOT / "src").resolve()), str(reg_dir))
+    ) % (str(reg_dir),)
     creationflags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0
     return subprocess.Popen(
         [sys.executable, "-c", script],
@@ -1458,17 +1453,16 @@ class TestClickRestartCommand:
                 # `artify serve <file>` with sys.executable.
                 assert isinstance(cmd, list)
                 assert cmd[0] == sys.executable
-                assert cmd[1:3] == ["-m", "agent_sommelier.artify"]
+                assert cmd[1:3] == ["-m", "artify_cli"]
                 assert cmd[3] == "serve"
                 assert str(html) in cmd[4]
                 # Spawn a fake "serve" that just writes a registry entry
                 # into our temp REGISTRY_DIR and sleeps.
                 script = (
                     "import os, sys, time, signal\n"
-                    "sys.path.insert(0, r'%s')\n"
                     "import webbrowser\n"
                     "webbrowser.open_new_tab = lambda *a, **k: True\n"
-                    "import agent_sommelier.artify as a\n"
+                    "import artify_cli.cli as a\n"
                     "from pathlib import Path\n"
                     "a.REGISTRY_DIR = Path(r'%s')\n"
                     # Pick a free port and pretend to serve.
@@ -1479,7 +1473,7 @@ class TestClickRestartCommand:
                     "a.write_registry_entry(port, os.getpid(), Path(r'%s'))\n"
                     "signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))\n"
                     "time.sleep(120)\n"
-                ) % (str((ROOT / "src").resolve()), str(redirected_registry), str(html))
+                ) % (str(redirected_registry), str(html))
                 creationflags = (
                     0x00000008 | 0x00000200 if sys.platform == "win32" else 0
                 )

@@ -8,7 +8,7 @@ restart by port) and exposes a command/response snapshot endpoint that
 lets the CLI read the current form state from a page the human is filling
 out in a browser.
 
-FILE: src/agent_sommelier/artify.py
+FILE: artify/cli/src/artify_cli/cli.py
 PURPOSE: CLI tool for previewing, live-reloading, instance-managing, and snapshotting HTML artifacts locally during authoring.
 OWNS: artify open/serve/list/kill/restart/snapshot commands, the local HTTP server used by serve (incl. command/response snapshot endpoints), the per-port instance registry under ~/.artify/instances, and app-mode browser detection for --webview.
 EXPORTS: main (Click group), open, serve, list_cmd, kill, restart, snapshot
@@ -45,7 +45,7 @@ import psutil
 from rich.console import Console
 from rich.table import Table
 
-from agent_sommelier import __version__
+__version__ = "0.0.0"
 
 
 INJECT_MARKER = "<!--ARTIFY_RELOAD-->"
@@ -851,7 +851,7 @@ def restart(port: int) -> None:
 
     # Spawn a detached `artify serve` for the same file. The new instance
     # picks a fresh free port and writes its own registry entry.
-    cmd = [sys.executable, "-m", "agent_sommelier.artify", "serve", str(file_path)]
+    cmd = [sys.executable, "-m", "artify_cli", "serve", str(file_path)]
     spawn_kwargs: dict = {}
     if sys.platform == "win32":
         # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP so the new process

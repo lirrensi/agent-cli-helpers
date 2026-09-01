@@ -15,7 +15,6 @@ agent-sommelier/
 │   ├── crony/               # Cron job scheduler (package)
 │   ├── screenshot.py        # Screen capture
 │   ├── essh.py              # Portable SSH wrapper
-│   ├── artify.py            # HTML artifact preview + live-reload
 │   ├── skill_store/          # Skill registry (CLI + MCP)
 │   │   ├── __init__.py
 │   │   ├── core.py
@@ -1515,12 +1514,20 @@ No new external dependencies are introduced.
 
 ## Component: artify
 
+> **Standalone skill.** artify is no longer part of this package. Its CLI is a
+> self-contained package that ships inside the skill at
+> [`skills/artify/cli/`](../skills/artify/cli/) with its own `pyproject.toml`
+> declaring `click`, `rich`, `psutil`, `watchdog`. It runs via
+> `uv run --project <skill>/cli artify ...` — no global install. The skill's
+> `scripts/artify` / `scripts/artify.ps1` launchers wrap that invocation.
+
 ### File
-`src/agent_sommelier/artify.py`
+`skills/artify/cli/src/artify_cli/cli.py` (module: `artify_cli.cli`)
 
 ### Entry Point
 ```python
-artify = "agent_sommelier.artify:main"
+# project.scripts in skills/artify/cli/pyproject.toml
+artify = "artify_cli:main"
 ```
 
 ### Commands
@@ -1586,7 +1593,7 @@ main()  @click.group
     |       +-- best-effort _terminate_pid(entry.pid)
     |       +-- remove_registry_entry(port)
     |       +-- subprocess.Popen([sys.executable, "-m",
-    |       |                    "agent_sommelier.artify", "serve", str(file)],
+    |       |                    "artify_cli", "serve", str(file)],
     |       |                    creationflags=... or start_new_session=True,
     |       |                    stdin/stdout/stderr=DEVNULL)
     |       +-- time.sleep(0.3)  # let the new instance write its registry entry
@@ -1833,10 +1840,10 @@ _terminate_pid(pid, grace_seconds=2.0)
 If no launcher is found, `open_with_browser()` falls back to `webbrowser.open_new_tab(url)` and prints a one-line warning to stderr. The `--webview` flag never errors on a missing browser.
 
 ### Dependencies
-- **click** — CLI framework (existing core dep)
-- **watchdog >= 4.0.0** — filesystem observation (new core dep, added for artify)
-- **psutil** — process liveness + cross-platform termination (existing core dep, reused for `kill` and `restart`)
-- **rich** — table output for `artify list` (existing core dep)
+
+The artify CLI's dependencies (`click`, `rich`, `psutil`, `watchdog`) are declared
+in its own standalone `skills/artify/cli/pyproject.toml` — they are **not** part of
+this package. `uv run --project <skill>/cli` resolves them on demand.
 
 `watchdog` is imported lazily inside `watch_and_serve` so the `open` command does not require it. `psutil` is used at the top of the module because `is_pid_alive` is on the hot path of `kill` and `list`.
 
@@ -1848,8 +1855,6 @@ If no launcher is found, `open_with_browser()` falls back to `webbrowser.open_ne
 click >= 8.1.0          <-- All tools (CLI framework)
     |
 rich >= 13.0.0          <-- bg, crony, essh, skill-store (table output)
-    |
-watchdog >= 4.0.0       <-- artify (filesystem events for live-reload)
     |
 dateparser >= 1.2.0    <-- crony (optional, natural language)
     |

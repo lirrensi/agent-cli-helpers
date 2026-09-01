@@ -61,7 +61,6 @@ Pick what you need. Leave the rest. They all work independently — and they all
 | `tasks` | In-repo task management with deps, queues, and a web UI | built-in (web UI needs `[web]`) |
 | `tmx` | tmux/psmux session control for agents | built-in |
 | `amun` | Deep-thinking LLM question-asker with streaming | built-in |
-| `artify` | Build, live-serve, and snapshot interactive HTML artifacts | built-in |
 | `skill-store` | On-demand skill registry — keep hundreds, load a few | built-in |
 | `skill-store-mcp` | MCP server exposing the skill store to any agent | `[mcp-srv]` |
 
@@ -235,28 +234,27 @@ amun doctor                             # verify config + endpoint reachability
 
 Configurable OpenAI-compatible endpoint, streams by default, surfaces `reasoning`/`reasoning_content` from thinking models in dim yellow, `$ENV_VAR` references in the config. Defaults to the *"You are a senior architect and engineer. Think deeply before answering."* system prompt.
 
-### 🎨 artify — HTML artifact build, serve, snapshot
+### 🎨 artify — HTML artifact build, serve, snapshot (standalone skill)
+
+> **Standalone & install-free.** `artify` is a self-contained skill under
+> [`skills/artify/`](skills/artify/) — it is **not** part of this package and needs
+> no global install. Its CLI ships with its own `pyproject.toml` and runs via `uv`
+> on demand. Use the bundled launcher:
 
 ```bash
-# Offline, no server — finished artifact
-artify open report.html
-
-# Live iteration — local HTTP server with file-watch + browser auto-reload
-artify serve report.html
-artify serve report.html --webview      # chromeless native window
-
-# Manage running instances
-artify list                             # port, pid, file, status, url
-artify kill 54321
-artify restart 54321
-
-# Read the page's state back as JSON
-artify snapshot 54321 --timeout 60
+# From the skill folder: skills/artify/
+./scripts/artify open report.html          # offline, finished artifact
+./scripts/artify serve report.html         # live iteration, auto-reload
+./scripts/artify serve report.html --webview   # chromeless native window
+./scripts/artify list                      # port, pid, file, status, url
+./scripts/artify kill 54321
+./scripts/artify restart 54321
+./scripts/artify snapshot 54321 --timeout 60   # read page state as JSON
 ```
 
-Build a self-contained HTML file (or use one of the bundled starters), serve it locally, the browser tab auto-reloads as you save. When the page is a form, a dashboard, or any interactive surface, `artify snapshot <port>` collects its current state and prints it as JSON — the HTML becomes both the interface and the structured input. Watch a long-running serve with `bg run "artify serve report.html"`.
+Build a self-contained HTML file (or use one of the bundled starters), serve it locally, the browser tab auto-reloads as you save. When the page is a form, a dashboard, or any interactive surface, `artify snapshot <port>` collects its current state and prints it as JSON — the HTML becomes both the interface and the structured input. Watch a long-running serve with `bg run "scripts/artify serve report.html"`.
 
-The full skill — artifact families, design principles, the snapshot protocol, starter catalog — lives in [`skills/artify/SKILL.md`](skills/artify/SKILL.md).
+The full skill — artifact families, design principles, the snapshot protocol, starter catalog, and the install-free CLI — lives in [`skills/artify/SKILL.md`](skills/artify/SKILL.md).
 
 ### 🧠 skill-store — On-demand skill registry
 
@@ -344,12 +342,11 @@ agent-sommelier/
 │   │   ├── cli.py                   #   `skill-store` entry point
 │   │   └── mcp.py                   #   `skill-store-mcp` MCP server
 │   ├── tmx.py                       # tmux/psmux session control
-│   ├── amun.py                      # deep-thinking LLM question-asker
-│   └── artify.py                    # HTML artifact serve/snapshot
-├── skills/                          # 17 agent skill definitions
+│   └── amun.py                      # deep-thinking LLM question-asker
+├── skills/                          # 17 agent skill definitions (incl. standalone artify/)
 ├── docs/                            # product.md, spec.md, arch.md
 ├── tests/                           # pytest suite
-├── pyproject.toml                   # package metadata + 11 entry points
+├── pyproject.toml                   # package metadata + 14 entry points
 ├── uv.lock                          # locked dependencies
 └── README.md
 ```

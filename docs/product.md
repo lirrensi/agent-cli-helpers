@@ -461,7 +461,14 @@ Take a screenshot.
 
 ---
 
-## Tool: artify — HTML Artifact Preview
+## Tool: artify — HTML Artifact Preview (standalone skill)
+
+> **Note:** `artify` is now a standalone, self-contained skill under
+> [`skills/artify/`](skills/artify/). Its CLI ships with its own `pyproject.toml`
+> and runs via `uv` on demand — it is **not** installed with this package and needs
+> no global install. Invoke every command below through the bundled launcher:
+> `skills/artify/scripts/artify ...` (shell) or `skills/artify/scripts/artify.ps1 ...`
+> (PowerShell), which resolves the CLI's requirements via `uv run --project`.
 
 Open, live-reload, manage, and snapshot HTML artifacts produced by the `artify` skill. Six commands: a simple offline opener, a local HTTP server with polling-based live-reload, a process list, a kill-by-port, a restart-by-port, and a form-state snapshot reader that talks to the page via a small command/response protocol.
 

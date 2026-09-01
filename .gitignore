@@ -40,6 +40,13 @@ Thumbs.db
 .crony/
 .bgjobs/
 *.log
+COMPLAINTS.md
+
+# Tool artifacts
+.playwright-cli/
+.playwright-mcp/
+github-proof.png
+repo-main-page.png
 
 private/
 tasks/
